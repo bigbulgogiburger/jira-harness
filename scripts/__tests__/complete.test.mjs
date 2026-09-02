@@ -195,6 +195,9 @@ test('(e) 실행 → origin 브랜치 · archive 파일 · 원래 상태 파일 
   assert.ok(j.jira.comment.includes('프로브 1/1 PASS') && j.jira.comment.includes('사람 확인 1건 SKIPPED'), j.jira.comment);
   assert.ok(j.jira.comment.includes('라운드 2') && j.jira.comment.includes('델타 패스 1') && j.jira.comment.includes('ok(120s)'), j.jira.comment);
   assert.ok(j.jira.comment.includes('main 머지는 사람이'), j.jira.comment);
+  assert.ok(j.jira.comment.includes('- 소요: 총'), `소요 시간 줄이 댓글에 남는다: ${j.jira.comment}`);
+  assert.equal(typeof j.summary.timing.total_s, 'number', 'summary.timing.total_s');
+  assert.ok(j.summary.timing.stage_offsets_s && !('start' in j.summary.timing.stage_offsets_s), 'stage_offsets_s 는 start 를 뺀 단계별 첫 도달 초');
   assert.deepEqual(j.summary.dod_human_pending, ['D2']);
   assert.equal(j.summary.gate.level, 'full');
   assert.equal(j.summary.review.blockers_open, 0);

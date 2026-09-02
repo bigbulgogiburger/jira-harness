@@ -144,6 +144,24 @@ const reviewSummary = {
   codex: rv.codex ?? 'skipped', lanes: rv.lanes ?? null, findings: rv.findings ?? null, blockers_open: rv.blockers_open ?? 0,
 };
 
+// ---------- 소요 시간(상태 history 기준 — 사람이 재지 않아도 이슈마다 남는다) ----------
+const hist = Array.isArray(state.history) ? state.history : [];
+const startAt = state.started_at ?? (hist[0] && hist[0].at) ?? null;
+const firstAt = {};
+for (const h of hist) if (h && h.stage && h.at && !(h.stage in firstAt)) firstAt[h.stage] = h.at;
+const secs = (a, b) => (a && b) ? Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / 1000)) : null;
+const fmtDur = v => v == null ? "?" : (v >= 3600 ? `${Math.floor(v / 3600)}h ${Math.round((v % 3600) / 60)}m` : v >= 60 ? `${Math.round(v / 60)}m` : `${v}s`);
+const timing = {
+  started_at: startAt,
+  total_s: startAt ? Math.max(0, Math.round((Date.now() - Date.parse(startAt)) / 1000)) : null,
+  stage_offsets_s: Object.fromEntries(Object.entries(firstAt).filter(([k]) => k !== "start").map(([k, v]) => [k, secs(startAt, v)])),
+  gate_commit_runs: hist.filter(h => h.stage === "gate" && /commit/.test(h.note ?? "")).length,
+  gate_full_duration_s: g.duration_s ?? null,
+};
+const timingLine = startAt
+  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · 전량 게이트 ${fmtDur(timing.gate_full_duration_s)})`
+  : null;
+
 const comment = [
   `${keys.length ? keys.join(', ') + ' ' : ''}구현을 마치고 브랜치 \`${branch}\` 를 원격에 올렸습니다.`,
   '',
@@ -151,11 +169,12 @@ const comment = [
   stackLine ? `  - 스택별: ${stackLine}` : null,
   `- DoD: 프로브 ${probePass}/${probes.length} PASS · 사람 확인 ${humans.length}건 SKIPPED${humanPending.length ? ` (미확인 ${humanPending.join(', ')})` : ''}`,
   `- 리뷰: 라운드 ${reviewSummary.round ?? '?'} · 델타 패스 ${reviewSummary.delta_passes} · codex ${reviewSummary.codex} · 확정 blocker ${reviewSummary.blockers_open}건`,
+  timingLine,
   `- main 머지는 사람이 합니다 — 자동 머지하지 않습니다.`,
 ].filter(Boolean).join('\n');
 
 const jira = { transition: cfg.jira.done_transition, comment };
-const summary = { gate: gateSummary, review: reviewSummary, dod_human_pending: humanPending };
+const summary = { gate: gateSummary, review: reviewSummary, dod_human_pending: humanPending, timing };
 
 // ---------- 아카이브 경로 ----------
 const issuesDir = join(configRoot, cfg.runtime_dir, 'issues');
