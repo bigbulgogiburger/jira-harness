@@ -1,0 +1,16 @@
+{
+  "name": "bigbulgogiburger",
+  "description": "bigbulgogiburger's Claude Code plugins",
+  "owner": {
+    "name": "bigbulgogiburger"
+  },
+  "plugins": [
+    {
+      "name": "jira-harness",
+      "source": "./",
+      "description": "Jira-driven development harness: issue router, saved workflows, commit/push gate, wiki bookkeeping.",
+      "version": "3.0.0-alpha.1",
+      "category": "productivity"
+    }
+  ]
+}

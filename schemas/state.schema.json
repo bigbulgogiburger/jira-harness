@@ -1,0 +1,101 @@
+{
+  "$id": "jira-harness/state.schema.json",
+  "title": "jira-harness branch state (<runtime_dir>/issues/<branch-slug>.json)",
+  "description": "브랜치 단위 진행 상태. gate·review 필드는 gate.mjs · codex-review.sh · verify 병합만 쓴다(사람·모델이 손으로 쓰지 않는 규약). 커밋/push 훅은 이 기록의 tree 와 로그 해시를 재검증한다.",
+  "type": "object",
+  "required": ["version", "branch", "keys", "stage", "started_at", "updated_at", "history"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 3, "maximum": 3 },
+    "branch": { "type": "string" },
+    "keys": { "type": "array", "items": { "type": "string" } },
+    "stage": { "type": "string", "enum": ["start", "grill", "plan", "implement", "review", "gate", "complete", "archived"] },
+    "started_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "guides": { "type": "object", "additionalProperties": { "type": "string" } },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "object", "required": ["q", "a"], "properties": { "q": { "type": "string" }, "a": { "type": "string" }, "at": { "type": "string" } } }
+    },
+    "touched": { "type": "array", "items": { "type": "string" } },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "model"],
+        "properties": {
+          "name": { "type": "string" },
+          "model": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "worktree": { "type": "boolean" },
+          "result": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "dod": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": "string" },
+          "probe": { "type": ["string", "null"], "description": "셸 명령. null 이면 human 항목" },
+          "cwd": { "type": ["string", "null"], "description": "프로젝트 루트 기준 상대 경로" },
+          "expect": {
+            "type": "object",
+            "properties": {
+              "pattern": { "type": "string", "description": "출력에 있어야 하는 정규식" },
+              "min_tests": { "type": "integer", "description": "실행 건수 하한 — 0 이면 FAIL(분모 기록)" }
+            }
+          },
+          "human": { "type": "boolean" },
+          "last": { "type": "string", "enum": ["PASS", "FAIL", "PENDING", "SKIPPED"] },
+          "at": { "type": "string" }
+        }
+      }
+    },
+    "gate": {
+      "type": ["object", "null"],
+      "required": ["level", "tree", "results", "at"],
+      "properties": {
+        "level": { "type": "string", "enum": ["commit", "full"] },
+        "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "git write-tree(인덱스 트리) id" },
+        "results": {
+          "type": "object",
+          "description": "키: compile · lint · build · test · extra · dod",
+          "additionalProperties": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] }
+        },
+        "stacks": { "type": "object" },
+        "dod": { "type": "string", "description": "예: 3/4 (human 1 제외)" },
+        "log": { "type": ["string", "null"] },
+        "log_sha256": { "type": ["string", "null"] },
+        "duration_s": { "type": "number" },
+        "at": { "type": "string" },
+        "full_at": { "type": ["string", "null"] }
+      }
+    },
+    "review": {
+      "type": ["object", "null"],
+      "required": ["tree", "at"],
+      "properties": {
+        "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "files": { "type": "array", "items": { "type": "string" } },
+        "codex": { "type": "string", "description": "ok(…) · limit · skipped · fail" },
+        "lanes": { "type": "integer" },
+        "findings": { "type": "integer" },
+        "blockers_open": { "type": "integer" },
+        "round": { "type": "integer" },
+        "delta_passes": { "type": "integer" },
+        "at": { "type": "string" }
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stage", "at"],
+        "properties": { "stage": { "type": "string" }, "at": { "type": "string" }, "workflow_run": { "type": "string" }, "note": { "type": "string" } }
+      }
+    }
+  }
+}

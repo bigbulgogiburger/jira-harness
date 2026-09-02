@@ -1,0 +1,40 @@
+{
+  "verify:a-rev": {
+    "findings": [
+      {
+        "severity": "MINOR",
+        "file": "backend/src/entity/User.java",
+        "line": 42,
+        "claim": "Null 체크가 없다.",
+        "evidence": "42행 getName() 직접 참조",
+        "axis": "a-rev"
+      }
+    ]
+  },
+  "verify:b-rev": {
+    "findings": [
+      {
+        "severity": "BLOCKER",
+        "file": "backend\\src\\entity\\User.java",
+        "line": 42,
+        "claim": "null   체크가   없다",
+        "evidence": "같은 지점을 다른 레인이 다시 봤다",
+        "axis": "b-rev"
+      },
+      {
+        "severity": "MAJOR",
+        "file": "frontend/src/App.vue",
+        "line": 7,
+        "claim": "응답 실패를 화면이 표시하지 않는다",
+        "evidence": "7행 catch 블록이 비어 있다",
+        "axis": "b-rev"
+      },
+      {
+        "severity": "INFO",
+        "file": "",
+        "claim": "파일 없는 finding 은 버려야 한다",
+        "evidence": "정규화 대상 밖"
+      }
+    ]
+  }
+}

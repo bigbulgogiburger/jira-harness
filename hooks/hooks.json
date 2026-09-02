@@ -1,0 +1,17 @@
+{
+  "description": "jira-harness: git commit / git push are judged against the branch state JSON (gate + review records). This is the only hook.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/commit-gate.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

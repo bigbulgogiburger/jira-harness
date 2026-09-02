@@ -1,0 +1,10 @@
+{
+  "lane:be": {
+    "name": "be",
+    "status": "done",
+    "files": ["backend/src/A.java"],
+    "tests": { "command": "gradle test", "passed": 12, "failed": 0 },
+    "notes": "계약대로 구현"
+  },
+  "lane:fe": "__null__"
+}

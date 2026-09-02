@@ -1,0 +1,255 @@
+{
+  "$id": "jira-harness/harness.schema.json",
+  "title": "jira-harness project config (.claude/harness.json)",
+  "description": "프로젝트만 아는 값. 절대 경로·자격증명 금지(머신별 값은 stacks.<name>.env_file 이 가리키는 gitignore 파일로).",
+  "type": "object",
+  "required": [
+    "version",
+    "mode",
+    "issue_prefix",
+    "branch_pattern",
+    "stacks"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 3
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "suggest",
+        "off"
+      ],
+      "description": "auto=차단 · suggest=경고만 · off=비활성"
+    },
+    "issue_prefix": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]+$"
+    },
+    "branch_pattern": {
+      "type": "string",
+      "description": "named group <keys> 가 이슈 번호 열을 캡처한다. 예: ^(feat|fix)/(?<keys>ABC-\\d+(?:-\\d+)*)(?:-[a-z0-9]+)*$"
+    },
+    "default_branch": {
+      "type": "string",
+      "description": "기본 main"
+    },
+    "shell": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "bash",
+        "sh",
+        "cmd"
+      ],
+      "description": "게이트 명령을 돌릴 셸. auto = win32 면 bash(Git Bash) 우선, 없으면 cmd; 그 외 sh"
+    },
+    "runtime_dir": {
+      "type": "string",
+      "description": "기본 .claude/runtime"
+    },
+    "stacks": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/stack"
+      }
+    },
+    "dispatch": {
+      "type": "object",
+      "description": "verify 레인 배정: 경로 glob → 에이전트 이름 목록(프로젝트 agents/ 또는 jira-harness:* 제네릭)",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "codex": {
+          "type": "boolean"
+        },
+        "codex_timeout": {
+          "type": "integer",
+          "minimum": 60
+        },
+        "lanes_max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "lane_model": {
+          "type": "string"
+        },
+        "rounds_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "code_review": {
+          "type": "boolean"
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "orchestrate": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "recon": {
+          "type": "string"
+        },
+        "implement": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "string"
+        }
+      }
+    },
+    "wiki": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "string"
+        },
+        "log": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "dev_guide": {
+          "type": "string",
+          "description": "{KEY} 자리표시자 포함 경로 템플릿"
+        },
+        "synthesis_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_pages_per_closure": {
+          "type": "integer"
+        },
+        "claude_md_max_lines": {
+          "type": "integer",
+          "minimum": 20,
+          "description": "issue-complete 가 CLAUDE.md 줄 수가 이 값을 넘으면 마감을 거부한다(closure 를 CLAUDE.md 에 쌓지 못하게). 기본 150"
+        }
+      }
+    },
+    "jira": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "start_transition": {
+          "type": "string"
+        },
+        "done_transition": {
+          "type": "string"
+        },
+        "comment_lang": {
+          "type": "string"
+        }
+      }
+    },
+    "docs_only_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fingerprint_exclude": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 30
+        },
+        "commit_budget_s": {
+          "type": "integer",
+          "minimum": 30,
+          "description": "경량 게이트 목표 시간(초과해도 실패는 아니고 기록만)"
+        }
+      }
+    },
+    "branch_template": {
+      "type": "string",
+      "description": "issue-start 가 만드는 브랜치 이름. {keys} = 첫 키 전체 + 나머지 키 번호(같은 접두사일 때). 기본 feat/{keys}"
+    }
+  },
+  "$defs": {
+    "stack": {
+      "type": "object",
+      "required": [
+        "dir"
+      ],
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "프로젝트 루트 기준 상대 경로. '.' 허용"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "이 스택에 속하는 파일 glob. 생략 시 <dir>/**"
+        },
+        "compile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "test": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "KEY=VALUE 줄 파일(gitignore). 게이트 명령 환경에 주입"
+        }
+      }
+    }
+  }
+}

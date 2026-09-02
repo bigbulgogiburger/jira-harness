@@ -1,0 +1,11 @@
+# 텍스트는 LF 로 정규화(Windows 체크아웃 포함) — 셸·워크플로 스크립트가 CRLF 로 깨지지 않게
+* text=auto eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+# 바이너리는 절대 변환하지 않는다(autocrlf 가 PNG 서명을 먹은 사고 재발 방지)
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary

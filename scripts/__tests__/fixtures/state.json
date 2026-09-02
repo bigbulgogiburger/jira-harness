@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "branch": "feat/ABC-101-102",
+  "keys": ["ABC-101", "ABC-102"],
+  "stage": "implement",
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T01:00:00.000Z",
+  "guides": { "ABC-101": "docs/ABC-101-dev-guide.md", "ABC-102": "docs/ABC-102-dev-guide.md" },
+  "decisions": [{ "q": "저장 단위는?", "a": "브랜치", "at": "2026-01-01T00:10:00.000Z" }],
+  "touched": ["backend/src/main/java/app/FeeService.java"],
+  "lanes": [{ "name": "BE", "model": "opus", "files": ["backend/**"], "worktree": false, "result": null }],
+  "dod": [
+    { "id": "D1", "text": "수수료 불변식", "probe": "echo 'BUILD SUCCESSFUL' && echo '3 tests completed'", "cwd": "backend", "expect": { "pattern": "BUILD SUCCESSFUL", "min_tests": 1 }, "last": "PENDING" },
+    { "id": "D2", "text": "실화면 확인", "probe": null, "human": true, "last": "PENDING" }
+  ],
+  "gate": {
+    "level": "commit",
+    "tree": "0123456789abcdef0123456789abcdef01234567",
+    "results": { "compile": "PASS", "lint": "SKIPPED", "build": "NOT_RUN", "test": "NOT_RUN", "extra": "NOT_RUN", "dod": "PASS" },
+    "dod": "1/1 (human 1 제외)",
+    "log": ".claude/runtime/gate/feat-ABC-101-102-commit.log",
+    "log_sha256": null,
+    "duration_s": 42.5,
+    "at": "2026-01-01T00:50:00.000Z",
+    "full_at": null
+  },
+  "review": null,
+  "history": [{ "stage": "start", "at": "2026-01-01T00:00:00.000Z" }, { "stage": "plan", "at": "2026-01-01T00:30:00.000Z", "workflow_run": "wf_example" }]
+}

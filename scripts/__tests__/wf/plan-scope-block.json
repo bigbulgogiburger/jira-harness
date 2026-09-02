@@ -1,0 +1,22 @@
+{
+  "design": {
+    "guides": { "ABC-123": "docs/ABC-123-dev-guide.md" },
+    "touched": ["backend/src/FeeService.java", "backend/src/ReportExporter.java"],
+    "lanes": [
+      { "name": "server", "model": "opus", "files": ["backend/**"], "worktree": false, "brief": "요금 계산 경로를 고친다." }
+    ],
+    "dod": [
+      { "id": "D1", "text": "정상 입력이 저장된다", "probe": "npm test -- fee", "cwd": "frontend", "expect": { "pattern": "passed", "min_tests": 1 }, "human": false }
+    ],
+    "wrote": ["docs/ABC-123-dev-guide.md.draft", "runtime/issues/feat-ABC-123.plan.json"],
+    "summary": "요금 표시 정합 + 리포트 내보내기"
+  },
+  "verify:scope": {
+    "verdict": "BLOCK",
+    "blockers": [
+      "ReportExporter 는 요구에 없다 — 범위 이탈",
+      "요구 R2(거부 케이스)를 확인하는 DoD 가 없다"
+    ],
+    "notes": "초안 문서와 요구 목록을 대조했다."
+  }
+}

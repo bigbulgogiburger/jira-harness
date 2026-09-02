@@ -1,0 +1,17 @@
+{
+  "design": {
+    "guides": { "ABC-123": "docs/ABC-123-dev-guide.md" },
+    "touched": ["backend/src/FeeService.java", "frontend/src/FeeView.vue"],
+    "lanes": [
+      { "name": "server", "model": "opus", "files": ["backend/**"], "worktree": false, "brief": "요금 계산 경로를 고치고 거부 케이스를 추가한다." },
+      { "name": "client", "model": "sonnet", "files": ["frontend/**"], "worktree": false, "brief": "화면 표시 칸을 계산 결과와 맞춘다." }
+    ],
+    "dod": [
+      { "id": "D1", "text": "정상 입력이 저장된다", "probe": "npm test -- fee", "cwd": "frontend", "expect": { "pattern": "passed", "min_tests": 1 }, "human": false },
+      { "id": "D2", "text": "잘못된 입력은 거부된다", "probe": "npm test -- fee-reject", "cwd": "frontend", "expect": { "pattern": "passed", "min_tests": 1 }, "human": false },
+      { "id": "D3", "text": "실화면 육안 확인", "probe": null, "cwd": null, "expect": {}, "human": true }
+    ],
+    "wrote": ["docs/ABC-123-dev-guide.md.draft", "runtime/issues/feat-ABC-123.plan.json"],
+    "summary": "요금 표시 정합"
+  }
+}

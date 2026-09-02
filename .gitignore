@@ -1,0 +1,10 @@
+# 공개 위생 deny-list — 레포에 넣으면 그 자체가 유출
+.hygiene.local
+# 로컬 개발 부산물
+.dev/
+node_modules/
+*.local
+*.local.json
+evals/**/outputs/
+evals/**/workspace/
+__pycache__/

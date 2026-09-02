@@ -1,0 +1,15 @@
+{
+  "name": "jira-harness",
+  "version": "3.0.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code plugin — Jira-driven development harness (issue router, saved workflows, commit/push gate hook, bookkeeping scripts)",
+  "scripts": {
+    "test": "node --test scripts/__tests__/*.test.mjs",
+    "hygiene": "node scripts/hygiene.mjs",
+    "validate": "claude plugin validate . --strict",
+    "check": "npm run hygiene && npm run validate && npm test"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}

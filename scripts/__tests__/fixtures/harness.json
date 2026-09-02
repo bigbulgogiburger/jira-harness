@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "mode": "auto",
+  "issue_prefix": "ABC",
+  "branch_pattern": "^(feat|fix)/(?<keys>ABC-\\d+(?:-\\d+)*)(?:-[a-z0-9]+)*$",
+  "default_branch": "main",
+  "stacks": {
+    "be": { "dir": "backend", "compile": "echo compile-ok", "build": "echo build-ok", "test": "echo 'BUILD SUCCESSFUL' && echo '12 tests completed'", "lint": null, "env_file": ".claude/harness.env.local" },
+    "fe": { "dir": "frontend", "compile": "echo lint-ok", "build": "echo build-ok", "test": "echo 'Tests  7 passed'", "extra": ["echo extra-ok"] }
+  },
+  "dispatch": {
+    "backend/**/entity/**": ["spring-jpa-reviewer"],
+    "*": ["jira-harness:spring-security-reviewer"]
+  },
+  "review": { "codex": false, "lanes_max": 2 },
+  "wiki": { "dev_guide": "docs/{KEY}-dev-guide.md" },
+  "jira": { "project": "ABC" },
+  "docs_only_paths": ["docs/**", "**/*.md", ".claude/**"],
+  "fingerprint_exclude": [".claude/runtime/**", "**/*.draft"]
+}
