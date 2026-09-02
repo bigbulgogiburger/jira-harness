@@ -50,7 +50,7 @@
 1. `review.codex=true` 면 `bash "<P>/scripts/codex-review.sh" [--since <tree>]`. 마지막 `CODEX_RESULT={…}` 줄로 판정한다 — exit code 가 아니라 **본문 끝**이다. `status`: `ok`(blockers N) / `limit`(사용량 한도 — 2 로 가되 `codex:"limit"` 으로 기록해 폴백을 감추지 않는다) / `fail`.
 2. `workflows/verify.js` args `{diffRef, changedFiles[], dispatch, axes, lanesMax, laneModel, repoRoot, ts, delta?}` — `diffRef` = `<default_branch>...HEAD`(작업트리 포함), `changedFiles` = `git diff --name-only <default_branch>...HEAD` + 작업트리 변경(라우터가 값으로 넘긴다 — 스크립트는 git 을 못 부른다), `dispatch` = `harness.json.dispatch`(경로 glob → 에이전트, 먼저 걸린 glob 이 임자), `axes` = 이번 변경에 맞는 관점 목록. 레인 ≤ `review.lanes_max`(기본 4), **finding 수와 무관하게 레인 수 고정**. 반환 `{findings[{severity, file, line, claim, evidence, axis}], lanes[{label, agentType, count}], dropped[], delta}` — `dropped` 는 상한에 걸려 **이번에 안 본 축**이다. 보고에 "이번 라운드가 안 본 축" 으로 남기고 다음 라운드·델타에서 회수한다(무음 절단 금지).
 3. **메인이 확정/기각** — finding 마다 한 줄 근거. finding 별 반증 에이전트를 띄우지 않는다(29→56 폭주 이력). 기각 사유 없이 버리지 않는다.
-4. 기록: 확정 finding 을 `<runtime>/issues/<slug>.review.json` 으로 쓰고 `issue-set.mjs --review <파일> [--delta]`. 스크립트가 `tree`(현재 인덱스 지문)·`files`·`at`·`blockers_open`(확정 BLOCKER 수) 을 계산한다.
+4. 기록: 확정 finding 을 `<runtime>/issues/<slug>.review.json` 으로 쓰고 `issue-set.mjs --review <파일> [--delta]`. 스크립트가 `tree`(현재 인덱스 지문)·`files`·`at`·`blockers_open`(확정 BLOCKER 수) 을 계산한다. **파일 모양은 상태 스키마를 따른다** — `{round?, codex: string(요약 한 줄 + 산출물 경로), lanes: integer(레인 수), findings: [{severity, file, line, claim, evidence, axis, decision, reason?}] | integer, blockers_open?}`. 레인 목록·기각 사유 같은 상세는 같은 파일에 다른 키로 두지 말고(스키마 위반으로 저장 거부) `<slug>.review.detail.json` 처럼 별도 파일에 둔다.
 
 라운드 2(라운드 1 에 blocker 가 있었을 때만): 수정 → 같은 순서로 **1차 blocker 축만** 재검(`axes` 를 그 축으로 좁힌다). `review.rounds_max`(기본 2) 를 넘지 않는다.
 

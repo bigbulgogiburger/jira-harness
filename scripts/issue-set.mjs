@@ -13,7 +13,7 @@
 //        [--dod '<json>']...
 //        [--dod-result <id> <PASS|FAIL|SKIPPED>]...
 //        [--merge <file.json> [--from plan]]
-//        [--review <file.json> [--delta]]
+//        [--review <file.json> [--delta]]   ← 파일 키: round? · codex(string) · lanes(integer) · findings(array|integer) · blockers_open?
 //        [--print]
 //
 // 종료 코드: 0 정상 · 1 도메인 위반(잘못된 stage·JSON 파싱 실패·금지 키·알 수 없는 dod id 등) · 2 사용법/설정/상태 없음.
