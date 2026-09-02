@@ -213,6 +213,38 @@ test('DoD 프로브: 분모(min_tests) 없으면 FAIL → GATE_FAIL, 건수를 �
   assert.equal(readState(stateFile(dir)).dod[0].last, 'FAIL');
 });
 
+test('DoD 프로브: 러너 색상 코드(ANSI)가 낀 요약 줄도 건수·pattern 을 읽는다 · sentinel 프로브는 min_tests 없이 pattern 만으로 판정', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  const st = readState(stateFile(dir));
+  // vitest 실출력 형태: "Tests \x1b[1m\x1b[32m3 passed\x1b[39m\x1b[22m | 28 skipped (31)"
+  const vitestLine = 'Tests \\033[1m\\033[32m3 passed\\033[39m\\033[22m\\033[2m | \\033[22m\\033[33m28 skipped\\033[39m\\033[90m (31)\\033[39m';
+  st.dod = [
+    { id: 'D1', text: '색상 낀 vitest 요약', probe: `printf '${vitestLine}\\n'`, cwd: 'backend', expect: { pattern: 'Tests +[0-9]+ passed', min_tests: 3 }, last: 'PENDING' },
+    { id: 'D2', text: 'sentinel(위반 주입)', probe: 'echo INJECTION_FIRED', cwd: 'backend', expect: { pattern: 'INJECTION_FIRED' }, last: 'PENDING' },
+  ];
+  writeState(stateFile(dir), st);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  assert.equal(gate(dir, '--commit').status, 0, 'ANSI 를 벗겨 3건을 읽고, sentinel 은 pattern 만으로 PASS');
+  let s = readState(stateFile(dir));
+  assert.equal(s.gate.results.dod, 'PASS'); assert.equal(s.gate.dod, '2/2');
+
+  // 위반 주입 ① 색상 낀 요약이 하한 미달(3 < 5) → FAIL
+  s.dod[0].expect.min_tests = 5;
+  writeState(stateFile(dir), s);
+  assert.equal(gate(dir, '--commit').status, 1, '실행 건수 3 < 5');
+  s = readState(stateFile(dir));
+  assert.equal(s.dod[0].last, 'FAIL'); assert.equal(s.dod[1].last, 'PASS');
+
+  // 위반 주입 ② sentinel 프로브가 성공 문구를 못 찍으면 exit 0 이어도 FAIL
+  s.dod[0].expect.min_tests = 3;
+  s.dod[1].probe = 'echo nothing-fired';
+  writeState(stateFile(dir), s);
+  assert.equal(gate(dir, '--commit').status, 1, 'sentinel pattern 없음 → FAIL');
+  assert.equal(readState(stateFile(dir)).dod[1].last, 'FAIL');
+});
+
 test('스택 명령 실패 주입 → compile FAIL 기록 + hook GATE_FAIL · dry-run 은 기록하지 않는다', () => {
   const dir = makeRepo();
   const cfg = JSON.parse(readFileSync(join(dir, '.claude/harness.json'), 'utf8'));

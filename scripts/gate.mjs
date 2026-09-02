@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { locateProject, loadConfig, parseBranch, statePath, readState, writeState, stacksTouched } from './lib/config.mjs';
 import { currentBranch, git, stagedFiles, untrackedFiles, changedVsHead, pinRef } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
-import { parseTestCount } from './lib/probe.mjs';
+import { parseTestCount, stripAnsi } from './lib/probe.mjs';
 import { resolveShell as resolveShellLib } from './lib/shell.mjs';
 
 // ---------- 인자 ----------
@@ -127,11 +127,12 @@ for (const d of probes) {
   console.error(`[gate] dod ${d.id}: ${d.probe}`);
   const r = runCmd(shell, d.probe, { cwd: dir, env: { ...process.env, JIRA_HARNESS_GATE: level }, timeoutS: cfg.gate.timeout_s });
   const reasons = [];
+  const out = stripAnsi(r.out); // 러너 색상 코드가 숫자·문구 사이에 끼면 정규식이 조용히 빗나간다
   if (r.status !== 0) reasons.push(`exit ${r.status}`);
-  if (d.expect?.pattern && !new RegExp(d.expect.pattern, 'm').test(r.out)) reasons.push(`pattern /${d.expect.pattern}/ 없음`);
+  if (d.expect?.pattern && !new RegExp(d.expect.pattern, 'm').test(out)) reasons.push(`pattern /${d.expect.pattern}/ 없음`);
   if (d.expect?.min_tests != null) {
-    const n = parseTestCount(r.out);
-    if (n == null) reasons.push('실행 건수(분모) 미확인 — 프로브가 건수를 출력해야 한다');
+    const n = parseTestCount(out);
+    if (n == null) reasons.push('실행 건수(분모) 미확인 — 테스트를 도는 프로브는 러너 요약(`Tests N passed`·`N tests completed`)이나 숫자 한 줄을 찍어야 한다. 건수가 없는 sentinel 프로브(위반 주입·존재 검사)는 min_tests 를 빼고 pattern 만 둔다');
     else if (n < d.expect.min_tests) reasons.push(`실행 건수 ${n} < ${d.expect.min_tests}`);
   }
   d.last = reasons.length ? 'FAIL' : 'PASS';

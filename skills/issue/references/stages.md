@@ -63,7 +63,7 @@
 - 커밋 전 `gate.mjs --commit [--stage-all]` — 컴파일·린트·DoD 프로브, **건드린 스택만**. 목표 `gate.commit_budget_s`(기본 3분).
 - push·complete 전 `gate.mjs --full` — 빌드·전체 테스트·extra(프로젝트 정적 게이트 등). 9~15분이면 Bash `run_in_background` 로 돌리고 알림을 기다린다(폴링하지 않는다).
 - 같은 트리에 전량 통과 기록이 이미 있으면 `--commit` 은 재실행을 생략한다.
-- DoD `human:true` 는 게이트가 SKIPPED 로 남긴다 — 보고에 "사람 확인 필요 N건" 을 적는다. `expect.min_tests` 는 실행 건수 0 을 FAIL 로 본다(초록이 "검사 0" 인지 "위반 0" 인지 구분하기 위해).
+- DoD `human:true` 는 게이트가 SKIPPED 로 남긴다 — 보고에 "사람 확인 필요 N건" 을 적는다. `expect.min_tests` 는 실행 건수 0 을 FAIL 로 본다(초록이 "검사 0" 인지 "위반 0" 인지 구분하기 위해). 건수는 러너 요약 줄(`Tests N passed`·`N tests completed`·`Tests run: N`)이나 숫자 한 줄에서 읽고 색상 코드는 벗긴다. 건수를 출력하지 않는 sentinel 프로브(위반 주입·존재 검사·lint 문구)에는 `min_tests` 를 두지 않는다 — 두면 "분모 미확인" 으로 상시 FAIL 이다.
 - FAIL 이면 `<runtime>/gate/<slug>-<level>-<시각>.log` 를 읽고 코드를 고친 뒤 재실행. 게이트 명령을 바꾸거나 테스트를 지워서 통과시키지 않는다.
 
 ## commit · push
