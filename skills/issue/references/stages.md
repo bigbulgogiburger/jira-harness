@@ -1,6 +1,6 @@
 # issue 단계별 절차
 
-`<P>` = 플러그인 루트. 스크립트는 `node "<P>/scripts/<이름>.mjs"`, 워크플로는 플러그인이 싣는 `workflows/` 가 이름공간으로 등록되므로 `Workflow({name: "jira-harness:<이름>", args: {...}})` 로 부르고, 이름 해석이 안 되면 `Workflow({scriptPath: "<P>/workflows/<이름>.js", args})` 로 부른다. args 는 전부 **값**이다(스크립트는 파일·git 을 읽지 못한다).
+`<P>` = 플러그인 루트. 스크립트는 `node "<P>/scripts/<이름>.mjs"`, 워크플로는 플러그인이 싣는 `workflows/` 가 이름공간으로 등록되므로 `Workflow({name: "jira-harness:<이름>", args: {...}})` 로 부르고, 이름 해석이 안 되면(플러그인이 세션 시작 뒤에 생긴 경우 등) `Workflow({scriptPath: "<runtime>/wf/<이름>.js", args})` 로 부른다 — Workflow 툴은 **작업 디렉토리 밖의 scriptPath 를 거부**하므로 `issue-start.mjs` 가 플러그인의 `workflows/*.js` 를 `<runtime>/wf/` 로 복사해 둔다(출력의 `workflows_dir`). args 는 전부 **값**이다(스크립트는 파일·git 을 읽지 못한다). worktree 에서 작업 중이면 경로 인자(`repoRoot`·`guidePaths`·`sidecarPath`)는 **worktree 의 절대 경로**로 준다 — 에이전트의 cwd 는 세션의 작업 디렉토리다.
 `<runtime>` = `harness.json.runtime_dir`(기본 `.claude/runtime`), `<slug>` = 브랜치 이름의 `/` 를 `-` 로 바꾼 것. 상태 JSON = `<runtime>/issues/<slug>.json`.
 스크립트 출력은 `--json` 이면 마지막 줄이 JSON 한 덩어리다 — 그것만 읽으면 된다.
 

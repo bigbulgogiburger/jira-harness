@@ -7,8 +7,12 @@
 //
 // 종료 코드: --status 는 항상 0(정보 조회, code 필드로 상태 판단). 시작 모드는 0(STARTED/ADOPTED/RESUMED) ·
 //            1(ON_OTHER_BRANCH — 실패가 아니라 안내) · 2(사용법/설정 오류).
-import { relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, copyFileSync } from 'node:fs';
+import { relative, resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, writeState, newState, matchesAny, DEFAULTS } from './lib/config.mjs';
+
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 import { currentBranch, git, unstagedFiles, untrackedFiles } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
 import { treeAccepted } from './lib/gate-core.mjs';
@@ -176,6 +180,16 @@ if (state) {
   code = scenario === 'adopt' ? 'ADOPTED' : 'STARTED';
 }
 
+// Workflow 툴은 작업 디렉토리 밖의 scriptPath 를 거부한다 — 플러그인 워크플로를 프로젝트 runtime 안으로 복사해 두어야
+// `jira-harness:<이름>` 이름 해석이 안 되는 세션(플러그인이 세션 시작 뒤에 생긴 경우 등)에서도 scriptPath 폴백이 된다.
+const wfDir = join(configRoot, cfg.runtime_dir, 'wf');
+const wfSrc = join(PLUGIN_ROOT, 'workflows');
+let workflowsCopied = [];
+if (existsSync(wfSrc)) {
+  mkdirSync(wfDir, { recursive: true });
+  for (const f of readdirSync(wfSrc).filter(n => n.endsWith('.js'))) { copyFileSync(join(wfSrc, f), join(wfDir, f)); workflowsCopied.push(f); }
+}
+
 const relPath = relative(configRoot, sPath).replace(/\\/g, '/');
 const comment = `[jira-harness v3] 이슈 ${keys.join(', ')} 작업을 브랜치 \`${targetBranch}\` 에서 착수합니다.`;
-emit({ code, branch: targetBranch, keys, slug, state_path: relPath, created, jira: { transition: cfg.jira.start_transition, comment } });
+emit({ code, branch: targetBranch, keys, slug, state_path: relPath, created, workflows_dir: relative(configRoot, wfDir).replace(/\\/g, '/'), workflows: workflowsCopied, jira: { transition: cfg.jira.start_transition, comment } });
