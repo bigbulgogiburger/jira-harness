@@ -61,7 +61,7 @@ description: "jira-create — 자연어 한 줄 또는 문서를 읽어 Jira 이
 
 ### 4. 스택 감지
 
-감지 매핑 + 스택별 라벨 후보는 `~/.claude/skills/_stack-detection.md` §1 + §3 참조.
+감지 매핑 + 스택별 라벨 후보는 [references/stack-detection.md](references/stack-detection.md) 참조(프로젝트에 `.claude/harness.json` 이 있으면 `stacks` 가 우선).
 
 스택 감지는 라벨 자동 부여와 issueType 추정(예: 백엔드 프로젝트면 Story 대신 Task가 표준일 수 있음)에 사용한다.
 
