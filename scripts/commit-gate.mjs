@@ -21,7 +21,7 @@ const cwd = effectiveCwd(command, baseCwd);
 
 let verdict;
 try {
-  verdict = decide(op, cwd);
+  verdict = decide(op, cwd, { command });
 } catch (e) {
   verdict = { decision: 'deny', code: 'HOOK_ERROR', reason: `판정 중 오류(fail-closed): ${e.message}` };
 }

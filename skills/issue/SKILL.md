@@ -58,6 +58,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 |------|----|------|
 | `BRANCH_PATTERN` | 이슈 브랜치가 아니고 상태도 없다 | `issue-start.mjs <KEY> --adopt`(이 브랜치를 채택) 또는 기본 브랜치로 가서 start |
 | `NO_STATE` | 이슈가 시작되지 않았다 | `issue-start.mjs <KEY>` |
+| `COMPLETED` | complete 가 상태를 아카이브한 브랜치에 **코드** 커밋 | closure 문서(CHANGELOG·wiki)는 docs-only 로 통과한다. 코드를 더 바꾸려면 `issue-start.mjs <KEY> --adopt` 로 다시 시작 |
 | `DIRTY_TREE` | 게이트가 본 트리 ≠ 커밋될 트리(unstaged·untracked) | 전부 `git add -A` 하거나 `gate.mjs --commit --stage-all` |
 | `NO_GATE` `GATE_STALE` `GATE_FAIL` `GATE_LOG_*` | 게이트 미실행·낡음·실패·로그 불일치 | `gate.mjs --commit` (push 면 `--full`) 재실행 |
 | `GATE_LEVEL` | push 인데 경량 게이트뿐 | `gate.mjs --full` |
@@ -66,7 +67,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | `BAD_STATE` | 상태 JSON 이 스키마에 안 맞는다(손으로 고친 흔적) | `issue-set.mjs` 로 값을 고치거나 `issue-start.mjs <KEY>` 로 다시 만든다 |
 | `BAD_CONFIG` `HOOK_ERROR` | harness.json 이 스키마에 안 맞거나 판정 중 예외(fail-closed) | 코드 문제가 아니다 — `/jira-harness:setup` 으로 설정을 고친다(우회 금지) |
 
-`issue-complete.mjs` 는 같은 사다리에 `CLAUDE_MD_TOO_LONG`·`PUSH_FAILED` 를 더한다(stages.md §complete). `DOCS_ONLY`·`MODE_OFF`·suggest 경고는 통과다. 훅을 우회하려고 `--no-verify` 나 상태 JSON 편집을 쓰지 않는다 — 막힌 이유를 고치는 것이 항상 더 짧다.
+`issue-complete.mjs` 는 같은 사다리에 `CLAUDE_MD_TOO_LONG`·`PUSH_FAILED` 를 더한다(stages.md §complete). `DOCS_ONLY`·`MODE_OFF`·suggest 경고는 통과다. docs-only 는 `git add … && git commit` · `commit -a` 처럼 한 명령이 스테이징까지 하면 스테이징 *예정* 파일(staged+unstaged+untracked)로 판정한다 — 훅은 명령 실행 *전*에 보므로 그때 인덱스는 비어 있다. 훅을 우회하려고 `--no-verify` 나 상태 JSON 편집을 쓰지 않는다 — 막힌 이유를 고치는 것이 항상 더 짧다.
 
 ## 4. 변형
 

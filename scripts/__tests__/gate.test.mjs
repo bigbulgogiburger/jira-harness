@@ -342,3 +342,33 @@ test('default_branch_policy: allow 면 main 의 코드 커밋·push 가 통과 �
   const iss = hook(dir, 'git commit -m code');
   assert.equal(iss.decision, 'deny'); assert.ok(iss.reason.includes('NO_STATE'), iss.reason);
 });
+
+test('add 와 commit 이 한 명령이면 docs-only 는 스테이징 예정 파일로 판정한다(-a/--all 포함) — 훅은 명령 실행 전에 본다', () => {
+  const dir = makeRepo();
+  edit(dir, 'docs/README.md', '# docs v3\n'); // unstaged — 인덱스는 아직 비어 있다
+  const a = hook(dir, 'git add -A && git status --short && git commit -q -m docs');
+  assert.equal(a.decision, 'pass'); assert.ok(a.reason.includes('DOCS_ONLY'), a.reason);
+  const b = hook(dir, 'git commit -am docs');
+  assert.equal(b.decision, 'pass'); assert.ok(b.reason.includes('DOCS_ONLY'), b.reason);
+  const plain = hook(dir, 'git commit -m docs'); // 스테이징도 -a 도 없으면 docs-only 아님 → main 정책 그대로
+  assert.equal(plain.decision, 'deny'); assert.ok(plain.reason.includes('BRANCH_PATTERN'), plain.reason);
+  edit(dir, 'backend/App.java', 'class App { int q; }\n'); // 코드가 섞이면 docs-only 아님
+  const mixed = hook(dir, 'git add -A && git commit -m mixed');
+  assert.equal(mixed.decision, 'deny'); assert.ok(mixed.reason.includes('BRANCH_PATTERN'), mixed.reason);
+});
+
+test('complete 뒤(상태 아카이브) 같은 브랜치: closure docs 커밋은 통과, 코드 커밋은 COMPLETED 로 안내', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  const archive = join(dir, '.claude/runtime/issues/archive');
+  mkdirSync(archive, { recursive: true });
+  writeFileSync(join(archive, 'feat-ABC-1-20260101T000000Z.json'), JSON.stringify(newState('feat/ABC-1', ['ABC-1'])) + '\n');
+  edit(dir, 'docs/README.md', '# closure\n');
+  const docs = hook(dir, "git add -A && git commit -q -F - <<'EOF'\ndocs: closure\nEOF");
+  assert.equal(docs.decision, 'pass'); assert.ok(docs.reason.includes('DOCS_ONLY'), docs.reason);
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'docs');
+  edit(dir, 'backend/App.java', 'class App { int c; }\n'); g(dir, 'add', '-A');
+  const code = hook(dir, 'git commit -m code');
+  assert.equal(code.decision, 'deny'); assert.ok(code.reason.includes('COMPLETED'), code.reason);
+  assert.ok(code.reason.includes('--adopt'), code.reason);
+});

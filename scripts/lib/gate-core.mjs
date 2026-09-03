@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, allDocsOnly, matchesAny } from './config.mjs';
+import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, latestArchivedState, allDocsOnly, matchesAny } from './config.mjs';
 import { currentBranch, stagedFiles, unstagedFiles, untrackedFiles, changedBetweenTrees, pushChangedFiles } from './git.mjs';
 import { fingerprintTree } from './tree.mjs';
 
@@ -23,10 +23,31 @@ export function sha256File(file) {
 }
 
 /**
+ * 커밋 명령이 같은 명령 안에서 스테이징까지 하는가 — `git add …` 가 commit 앞에 있거나, commit 에 -a/--all(-am 등) 이 붙었을 때.
+ * 훅은 명령이 실행되기 *전*에 판정하므로 이런 명령에서는 인덱스가 아직 비어 있다.
+ */
+export function stagesInCommand(command) {
+  if (!command) return false;
+  const idx = command.search(/git\s+(?:(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+|--no-pager)\s+)*commit\b/);
+  if (idx < 0) return false;
+  if (/git\s+add\b/.test(command.slice(0, idx))) return true;
+  const seg = command.slice(idx).split(/\n|&&|\|\||;|\|/)[0];
+  return /\s--all\b/.test(seg) || /\s-[a-z]*a[a-z]*\b/.test(seg);
+}
+
+/** 커밋에 들어갈 파일 — 보통은 인덱스, 명령이 스테이징까지 하면 스테이징 *예정* 파일(staged ∪ unstaged ∪ untracked) */
+function commitCandidates(root, command) {
+  const staged = stagedFiles(root);
+  if (!stagesInCommand(command)) return staged;
+  return [...new Set([...staged, ...unstagedFiles(root), ...untrackedFiles(root)])];
+}
+
+/**
  * @param op 'commit' | 'push'
+ * @param opts.command 훅이 받은 Bash 명령 전문(스테이징 여부 판단용) — 없으면 인덱스만 본다
  * @returns {{decision:'pass'|'deny'|'warn', reason:string, code:string}}
  */
-export function decide(op, cwd) {
+export function decide(op, cwd, opts = {}) {
   const proj = locateProject(cwd);
   if (!proj || !proj.configPath) return { decision: 'pass', code: 'NO_HARNESS', reason: '하네스 미설치 프로젝트' };
   let cfg;
@@ -36,8 +57,9 @@ export function decide(op, cwd) {
   const deny = (code, reason) => ({ decision: soft ? 'warn' : 'deny', code, reason });
   const root = proj.toplevel;
 
-  // docs-only 는 어느 브랜치든 통과 (main 위 docs 커밋 포함)
-  const files = op === 'commit' ? stagedFiles(root) : pushChangedFiles(root, cfg.default_branch);
+  // docs-only 는 어느 브랜치든 통과 (main 위 docs 커밋 포함). `git add … && git commit` 처럼 한 명령이 스테이징까지 하면
+  // 인덱스 대신 스테이징 예정 파일로 본다 — 종전엔 빈 인덱스로 판정해 closure docs 커밋이 NO_STATE 로 막혔다.
+  const files = op === 'commit' ? commitCandidates(root, opts.command) : pushChangedFiles(root, cfg.default_branch);
   if (files && allDocsOnly(files, cfg)) return { decision: 'pass', code: 'DOCS_ONLY', reason: `docs-only ${files.length}개` };
   if (op === 'push' && files && files.length === 0) return { decision: 'pass', code: 'NOTHING_TO_PUSH', reason: 'push 할 커밋 없음' };
 
@@ -57,7 +79,12 @@ export function decide(op, cwd) {
   const sPath = statePath(cfg, proj.configRoot, parsed.slug);
   let state;
   try { state = readState(sPath); } catch (e) { return deny('BAD_STATE', `상태 JSON 이 유효하지 않다(${sPath}): ${e.message}`); }
-  if (!state) return deny('NO_STATE', `이슈가 시작되지 않았다(${parsed.keys.join(',')}) — /jira-harness:issue ${parsed.keys[0]} 로 시작할 것`);
+  if (!state) {
+    // complete 가 상태를 아카이브한 브랜치 — 사다리(게이트·리뷰)가 닫혔다. closure 문서는 위 docs-only 로 이미 통과했으니 여기 오면 코드 변경이다.
+    const archived = latestArchivedState(cfg, proj.configRoot, parsed.slug);
+    if (archived) return deny('COMPLETED', `이슈가 complete 로 아카이브됐다(${archived}) — 코드를 더 바꾸려면 issue-start.mjs ${parsed.keys.join(',') || '<KEY>'} --adopt 로 다시 시작할 것(closure 문서만이면 docs-only 로 통과한다)`);
+    return deny('NO_STATE', `이슈가 시작되지 않았다(${parsed.keys.join(',')}) — /jira-harness:issue ${parsed.keys[0]} 로 시작할 것`);
+  }
 
   if (op === 'commit') {
     const ex = cfg.fingerprint_exclude;

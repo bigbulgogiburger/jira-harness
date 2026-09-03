@@ -46,7 +46,7 @@ claude plugin install jira-harness@bigbulgogiburger
 
 ## 게이트가 막는 이유(사유 코드)
 
-`[jira-harness] git commit: <CODE> — …` 한 줄이 stderr 로 나옵니다. `NO_STATE`(이슈 시작 안 됨) · `DIRTY_TREE`(게이트가 본 트리 ≠ 커밋될 트리) · `NO_GATE` / `GATE_STALE` / `GATE_FAIL`(게이트 미실행·낡음·실패) · `NO_REVIEW` / `REVIEW_STALE` / `REVIEW_BLOCKERS`(리뷰 없음·낡음·blocker) · push 는 추가로 `GATE_LEVEL`(전량 게이트 필요). 문서만 바뀐 커밋은 어느 브랜치든 통과합니다. `mode: suggest` 는 경고만, `off` 는 비활성.
+`[jira-harness] git commit: <CODE> — …` 한 줄이 stderr 로 나옵니다. `NO_STATE`(이슈 시작 안 됨) · `DIRTY_TREE`(게이트가 본 트리 ≠ 커밋될 트리) · `NO_GATE` / `GATE_STALE` / `GATE_FAIL`(게이트 미실행·낡음·실패) · `NO_REVIEW` / `REVIEW_STALE` / `REVIEW_BLOCKERS`(리뷰 없음·낡음·blocker) · push 는 추가로 `GATE_LEVEL`(전량 게이트 필요). 문서만 바뀐 커밋은 어느 브랜치든 통과합니다(`git add … && git commit` 처럼 한 명령이 스테이징까지 하면 스테이징 예정 파일로 판정). complete 로 아카이브된 브랜치에 코드를 더 커밋하면 `COMPLETED`(재시작은 `--adopt`). `mode: suggest` 는 경고만, `off` 는 비활성.
 
 브랜치가 `branch_pattern` 밖이면 `BRANCH_PATTERN` 으로 막습니다. 혼자 쓰는 저장소라 이슈 브랜치를 로컬에서 머지한 뒤 `main` 을 직접 올리는 흐름이라면 `"default_branch_policy": "allow"` 로 **그 브랜치에서만** 판정을 끕니다(기본 `deny` — 켜지 않은 프로젝트의 동작은 그대로). `allow` 를 켜도 이슈 브랜치의 사다리(상태·게이트·리뷰)는 전혀 바뀌지 않습니다.
 

@@ -78,6 +78,14 @@ export function statePath(cfg, root, slug) {
   return join(root, cfg.runtime_dir, 'issues', `${slug}.json`);
 }
 
+/** issue-complete 가 옮긴 아카이브 상태 중 이 슬러그의 최신 파일(루트 기준 상대 경로). 없으면 null. */
+export function latestArchivedState(cfg, root, slug) {
+  const dir = join(root, cfg.runtime_dir, 'issues', 'archive');
+  if (!existsSync(dir)) return null;
+  const names = readdirSync(dir).filter(f => f.startsWith(`${slug}-`) && f.endsWith('.json')).sort();
+  return names.length ? `${cfg.runtime_dir}/issues/archive/${names[names.length - 1]}` : null;
+}
+
 export function readState(file) {
   if (!existsSync(file)) return null;
   const st = JSON.parse(readFileSync(file, 'utf8'));
