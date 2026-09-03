@@ -67,6 +67,15 @@ test('감지: git commit/push 만, -C·cd 접두, 비-git 명령 무시', () => 
   assert.equal(detectGitOp('ls -la'), null);
   assert.ok(effectiveCwd('cd backend && git commit -m x', '/r').replace(/\\/g, '/').endsWith('/r/backend'));
   assert.ok(effectiveCwd('git -C frontend commit -m x', '/r').replace(/\\/g, '/').endsWith('/r/frontend'));
+  // -C 는 git 의 것만 — grep -C 2 를 디렉토리로 읽으면 없는 경로가 되어 NO_HARNESS 통과(fail-open)였다
+  assert.ok(effectiveCwd('grep -C 2 foo x.js; git commit -m x', '/r').replace(/\\/g, '/').endsWith('/r'));
+  // cd 가 줄바꿈 뒤(heredoc 다음 줄)에 오거나 줄바꿈으로 끝나도 첫머리다 — 놓치면 세션 cwd 의 다른 저장소를 판정한다
+  assert.ok(effectiveCwd('cat > f <<EOF\nx\nEOF\ncd sub && git commit -m x', '/r').replace(/\\/g, '/').endsWith('/r/sub'));
+  assert.ok(effectiveCwd('cd sub\ngit commit -m x', '/r').replace(/\\/g, '/').endsWith('/r/sub'));
+  // 절대 경로는 cwd 뒤에 이어 붙이지 않는다(join 이 그랬다) · Git Bash 의 /d/… 는 Windows 에서 D:/…
+  const abs = process.platform === 'win32' ? 'D:/other' : '/other';
+  assert.equal(effectiveCwd('cd ' + abs + ' && git commit -m x', '/r').replace(/\\/g, '/'), abs);
+  if (process.platform === 'win32') assert.equal(effectiveCwd('cd /d/other && git commit -m x', '/r').replace(/\\/g, '/'), 'D:/other');
   assert.equal(parseTestCount('BUILD SUCCESSFUL\n12 tests completed'), 12);
   assert.equal(parseTestCount('Tests  7 passed (7)'), 7);
   assert.equal(parseTestCount('tests=3'), 3);
@@ -371,4 +380,25 @@ test('complete 뒤(상태 아카이브) 같은 브랜치: closure docs 커밋은
   const code = hook(dir, 'git commit -m code');
   assert.equal(code.decision, 'deny'); assert.ok(code.reason.includes('COMPLETED'), code.reason);
   assert.ok(code.reason.includes('--adopt'), code.reason);
+});
+
+test('훅이 보는 디렉토리: 줄바꿈 뒤 cd 도 우선 · grep -C 는 무시 · 없는 경로는 fail-closed', () => {
+  const p = d => d.split(String.fromCharCode(92)).join('/');
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');   // 상태 없음 → 코드 커밋은 NO_STATE
+  edit(dir, 'backend/App.java', 'class App { int x; }\n');
+  g(dir, 'add', '-A');
+  // grep -C 2 의 -C 를 디렉토리로 읽으면 없는 경로 → NO_HARNESS 통과(우회)였다. 지금은 git 자신의 -C 만 본다
+  const stray = hook(dir, 'grep -C 2 foo x.js; git commit -m x');
+  assert.equal(stray.decision, 'deny'); assert.ok(stray.reason.includes('NO_STATE'), stray.reason);
+  // heredoc 다음 줄의 cd 도 첫머리 — 세션 cwd(harness 없는 다른 저장소)가 아니라 cd 한 저장소를 판정한다
+  const other = makeRepo({ harness: false });
+  const viaCd = hook(other, `cat > f <<X
+x
+X
+cd ${p(dir)} && git commit -m x`);
+  assert.equal(viaCd.decision, 'deny'); assert.ok(viaCd.reason.includes('NO_STATE'), viaCd.reason);
+  // 없는 경로는 NO_HARNESS 통과가 아니라 HOOK_ERROR(fail-closed)
+  const missing = hook(dir, 'cd ' + p(join(dir, 'nope')) + ' && git commit -m x');
+  assert.equal(missing.decision, 'deny'); assert.ok(missing.reason.includes('HOOK_ERROR'), missing.reason);
 });

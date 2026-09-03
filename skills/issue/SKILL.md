@@ -65,7 +65,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | `NO_REVIEW` `REVIEW_STALE` | 리뷰 없음 · 리뷰 이후 코드 변경 | verify — 이미 한 번 했으면 **델타 패스**만 |
 | `REVIEW_BLOCKERS` | 확정 blocker 미해결 | 수정 → 델타 패스 |
 | `BAD_STATE` | 상태 JSON 이 스키마에 안 맞는다(손으로 고친 흔적) | `issue-set.mjs` 로 값을 고치거나 `issue-start.mjs <KEY>` 로 다시 만든다 |
-| `BAD_CONFIG` `HOOK_ERROR` | harness.json 이 스키마에 안 맞거나 판정 중 예외(fail-closed) | 코드 문제가 아니다 — `/jira-harness:setup` 으로 설정을 고친다(우회 금지) |
+| `BAD_CONFIG` `HOOK_ERROR` | harness.json 이 스키마에 안 맞거나 판정 중 예외(fail-closed). 명령의 `cd`/`-C` 가 없는 경로를 가리켜도 여기다 | 코드 문제가 아니다 — `/jira-harness:setup` 으로 설정을 고친다(우회 금지). "판정할 디렉토리가 없다" 면 `cd` 를 변수·`~` 가 아닌 실제 경로로 |
 
 `issue-complete.mjs` 는 같은 사다리에 `CLAUDE_MD_TOO_LONG`·`PUSH_FAILED` 를 더한다(stages.md §complete). `DOCS_ONLY`·`MODE_OFF`·suggest 경고는 통과다. docs-only 는 `git add … && git commit` · `commit -a` 처럼 한 명령이 스테이징까지 하면 스테이징 *예정* 파일(staged+unstaged+untracked)로 판정한다 — 훅은 명령 실행 *전*에 보므로 그때 인덱스는 비어 있다. 훅을 우회하려고 `--no-verify` 나 상태 JSON 편집을 쓰지 않는다 — 막힌 이유를 고치는 것이 항상 더 짧다.
 

@@ -2,6 +2,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { resolve as pathResolve } from 'node:path';
 import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, latestArchivedState, allDocsOnly, matchesAny } from './config.mjs';
 import { currentBranch, stagedFiles, unstagedFiles, untrackedFiles, changedBetweenTrees, pushChangedFiles } from './git.mjs';
 import { fingerprintTree } from './tree.mjs';
@@ -136,9 +138,19 @@ export function detectGitOp(command) {
 
 /** 명령 안의 `cd <dir> &&` 또는 `git -C <dir>` 로 실행 디렉토리를 추정한다 */
 export function effectiveCwd(command, cwd) {
-  const c = /-C\s+("([^"]+)"|'([^']+)'|(\S+))/.exec(command);
-  if (c) return join(cwd, (c[2] ?? c[3] ?? c[4]));
-  const d = /(?:^|[;&|]\s*)cd\s+("([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)/.exec(command);
-  if (d) return join(cwd, (d[2] ?? d[3] ?? d[4]));
+  // -C 는 git 자신의 것만 — "grep -C 2 … ; git commit" 의 -C 를 디렉토리로 읽으면 없는 경로가 되어 NO_HARNESS 로 통과해 버린다
+  const c = /\bgit\s+(?:(?:-c\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+)\s+)*-C\s+("([^"]+)"|'([^']+)'|(\S+))/.exec(command);
+  if (c) return resolveDir(cwd, (c[2] ?? c[3] ?? c[4]));
+  // cd 는 줄바꿈 뒤(heredoc 다음 줄)와 "cd X<줄바꿈>" 꼴도 첫머리로 친다 — 놓치면 세션 cwd 의 *다른 저장소* 를 판정한다
+  const d = /(?:^|[;&|\n]\s*)cd\s+("([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;|\n|$)/.exec(command);
+  if (d) return resolveDir(cwd, (d[2] ?? d[3] ?? d[4]));
   return cwd;
+}
+
+/** cd/-C 대상 — 절대 경로는 그대로, ~ 는 홈, Git Bash 의 /d/… 는 Windows 에서 D:/… 로. (join 은 절대 경로를 cwd 뒤에 이어 붙여 없는 경로를 만들었다) */
+function resolveDir(cwd, dir) {
+  if (dir === '~' || dir.startsWith('~/')) dir = homedir() + dir.slice(1);
+  const m = /^\/([a-zA-Z])\/(.*)$/.exec(dir);
+  if (process.platform === 'win32' && m) dir = m[1].toUpperCase() + ':/' + m[2];
+  return pathResolve(cwd, dir);
 }
