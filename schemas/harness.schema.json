@@ -37,6 +37,14 @@
       "type": "string",
       "description": "기본 main"
     },
+    "default_branch_policy": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "allow"
+      ],
+      "description": "default_branch 에서의 commit·push — deny(기본, 이슈 브랜치 강제) / allow(1인 저장소: 머지 결과를 default_branch 로 올린다). allow 면 그 브랜치에서는 게이트·리뷰 기록을 판정하지 않는다"
+    },
     "shell": {
       "type": "string",
       "enum": [

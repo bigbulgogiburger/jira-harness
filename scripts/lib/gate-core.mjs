@@ -42,6 +42,11 @@ export function decide(op, cwd) {
   if (op === 'push' && files && files.length === 0) return { decision: 'pass', code: 'NOTHING_TO_PUSH', reason: 'push 할 커밋 없음' };
 
   const branch = currentBranch(root);
+  // default_branch 는 정책이 allow 면 판정하지 않는다 — 이슈 브랜치를 머지하고 main 을 올리는 1인 저장소 흐름.
+  // 기본은 deny 라 켜지 않은 프로젝트의 동작은 그대로다(이슈 브랜치 강제).
+  if (cfg.default_branch_policy === 'allow' && branch && branch === cfg.default_branch) {
+    return { decision: 'pass', code: 'DEFAULT_BRANCH_ALLOWED', reason: `${branch} 는 default_branch_policy=allow` };
+  }
   let parsed = parseBranch(branch, cfg);
   if (!parsed && branch && existsSync(statePath(cfg, proj.configRoot, branchSlug(branch)))) {
     // issue-start --adopt 로 채택한 브랜치: 패턴 밖이어도 상태 JSON 이 있으면 그 기록을 따른다(키는 상태 JSON 이 안다)

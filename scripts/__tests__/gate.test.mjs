@@ -17,7 +17,7 @@ const NODE = process.execPath;
 function sh(cmd, args, cwd, input) { return spawnSync(cmd, args, { cwd, encoding: 'utf8', input, windowsHide: true }); }
 function g(cwd, ...args) { const r = sh('git', args, cwd); if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`); return r.stdout.trim(); }
 
-function makeRepo({ mode = 'auto', harness = true } = {}) {
+function makeRepo({ mode = 'auto', harness = true, defaultBranchPolicy = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jh-gate-'));
   g(dir, 'init', '-q', '-b', 'main');
   g(dir, 'config', 'user.email', 'test@example.com');
@@ -31,6 +31,7 @@ function makeRepo({ mode = 'auto', harness = true } = {}) {
   if (harness) {
     const cfg = JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8'));
     cfg.mode = mode;
+    if (defaultBranchPolicy) cfg.default_branch_policy = defaultBranchPolicy;
     writeFileSync(join(dir, '.claude/harness.json'), JSON.stringify(cfg, null, 2) + '\n');
   }
   g(dir, 'add', '-A');
@@ -310,4 +311,34 @@ test('safe-commit: 훅 없이도 같은 판정 — 게이트 전 거부(exit 1),
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(g(dir, 'log', '-1', '--format=%s'), 'feat: ABC-1 x');
   assert.ok(JSON.parse(r.stdout.trim().split('\n').pop()).commit.sha);
+});
+
+test('default_branch_policy: allow 면 main 의 코드 커밋·push 가 통과 · 기본(deny)은 그대로 막고 · 이슈 브랜치 사다리는 안 바뀐다', () => {
+  // 기본값(deny) — 켜지 않은 프로젝트의 동작이 변하지 않는다
+  const den = makeRepo();
+  edit(den, 'backend/App.java', 'class App { int x; }\n'); g(den, 'add', '-A');
+  const d = hook(den, 'git commit -m code');
+  assert.equal(d.decision, 'deny'); assert.ok(d.reason.includes('BRANCH_PATTERN'), d.reason);
+
+  // allow — main 에서 코드 커밋 통과
+  const dir = makeRepo({ defaultBranchPolicy: 'allow' });
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const c = hook(dir, 'git commit -m code');
+  assert.equal(c.decision, 'pass'); assert.ok(c.reason.includes('DEFAULT_BRANCH_ALLOWED'), c.reason);
+  g(dir, 'commit', '-q', '-m', 'code');
+
+  // allow — main push 통과. upstream 이 뒤처진 실제 상황을 만들어야 NOTHING_TO_PUSH 로 새지 않는다
+  const remote = mkdtempSync(join(tmpdir(), 'jh-remote-'));
+  g(remote, 'init', '-q', '--bare', '-b', 'main');
+  g(dir, 'remote', 'add', 'origin', remote);
+  g(dir, 'push', '-q', '-u', 'origin', 'main');
+  edit(dir, 'backend/App.java', 'class App { int y; }\n'); g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'code2');
+  const pu = hook(dir, 'git push origin main');
+  assert.equal(pu.decision, 'pass'); assert.ok(pu.reason.includes('DEFAULT_BRANCH_ALLOWED'), pu.reason);
+
+  // allow 를 켜도 이슈 브랜치 판정은 그대로 — 상태 JSON 이 없으면 막힌다
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  edit(dir, 'backend/App.java', 'class App { int z; }\n'); g(dir, 'add', '-A');
+  const iss = hook(dir, 'git commit -m code');
+  assert.equal(iss.decision, 'deny'); assert.ok(iss.reason.includes('NO_STATE'), iss.reason);
 });

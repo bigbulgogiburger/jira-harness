@@ -8,6 +8,7 @@ export const CONFIG_REL = '.claude/harness.json';
 
 export const DEFAULTS = Object.freeze({
   default_branch: 'main',
+  default_branch_policy: 'deny',
   branch_template: 'feat/{keys}',
   shell: 'auto',
   runtime_dir: '.claude/runtime',
