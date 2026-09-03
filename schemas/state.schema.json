@@ -82,6 +82,7 @@
         "files": { "type": "array", "items": { "type": "string" } },
         "codex": { "type": "string", "description": "ok(…) · limit · skipped · fail" },
         "lanes": { "type": "integer" },
+        "lanes_reason": { "type": "string" },
         "findings": { "type": "integer" },
         "blockers_open": { "type": "integer" },
         "round": { "type": "integer" },

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "jira-harness",
-  "version": "3.1.1",
+  "version": "3.2.0",
   "description": "Jira-driven development harness for Claude Code: issue router skill, saved workflows (plan/implement/verify), commit/push gate hook, deterministic bookkeeping scripts (state JSON, wiki index, memory).",
   "author": {
     "name": "bigbulgogiburger"

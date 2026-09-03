@@ -90,6 +90,10 @@
           "minimum": 1,
           "maximum": 8
         },
+        "lanes_when": {
+          "enum": ["codex_gap", "always", "never"],
+          "description": "Claude 리뷰 레인을 언제 도는가 — codex_gap(기본): Codex 가 판정을 못 냈거나 Codex 가 볼 수 없는 축일 때만 · always: 매번 · never: 안 돈다"
+        },
         "lane_model": {
           "type": "string"
         },

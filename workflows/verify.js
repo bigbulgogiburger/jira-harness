@@ -1,4 +1,5 @@
-// verify.js — 리뷰 사다리 2단계. Codex 다음, 메인의 확정/기각 앞.
+// verify.js — 리뷰 레인. **Codex 판정을 대체하거나 보완할 때만** 돈다(harness.json 의 review.lanes_when, 기본 codex_gap):
+// Codex 가 ok 로 판정을 냈으면 같은 diff 를 여기서 다시 심판하지 않는다 — 기록에 lanes_reason 이 없으면 issue-set 이 거부한다.
 // 레인 수는 **finding 수와 무관하게 고정**이다 — finding 별 반증 fan-out 을 띄우지 않는다(29→56 폭주 이력).
 // 이 스크립트는 fs·git 을 만지지 않는다: 바뀐 파일 목록·diff 기준은 args 값으로 받는다.
 export const meta = {

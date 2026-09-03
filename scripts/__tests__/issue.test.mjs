@@ -252,3 +252,45 @@ test('issue-set --stage 잘못된 값 → exit 1', () => {
   const st = readState(stateFile(dir, 'feat-ABC-1'));
   assert.equal(st.stage, 'start', '거부된 stage 는 반영되지 않는다');
 });
+
+test('issue-set --review: Codex 판정 위에 레인을 돌렸으면 lanes_reason 이 없으면 거부(lanes_when 기본 codex_gap)', () => {
+  const dir = makeRepo();
+  start(dir, 'ABC-1');
+  edit(dir, 'backend/App.java', 'class App { int a; }\n');
+  const reviewFile = join(dir, 'review.json');
+
+  // 레인 0(= Codex 판정만) — 이유 없이 통과한다
+  writeFileSync(reviewFile, JSON.stringify({ codex: 'ok(0 blockers)', lanes: 0, findings: [] }));
+  assert.equal(setCmd(dir, ['--review', reviewFile]).status, 0);
+
+  // 레인 4 + 이유 없음 → 거부. 상태의 lanes 는 직전 값 그대로여야 한다(부분 반영 금지)
+  writeFileSync(reviewFile, JSON.stringify({ codex: 'ok(0 blockers)', lanes: 4, findings: [] }));
+  const bad = setCmd(dir, ['--review', reviewFile]);
+  assert.equal(bad.status, 1, bad.err);
+  assert.ok(bad.err.includes('lanes_reason'), bad.err);
+  assert.equal(readState(stateFile(dir, 'feat-ABC-1')).review.lanes, 0);
+
+  // 이유를 적으면 통과하고 기록에 남는다
+  writeFileSync(reviewFile, JSON.stringify({ codex: 'limit', lanes: 4, lanes_reason: 'codex limit — 레인이 대체', findings: [] }));
+  const ok = setCmd(dir, ['--review', reviewFile]);
+  assert.equal(ok.status, 0, ok.err);
+  const st = readState(stateFile(dir, 'feat-ABC-1'));
+  assert.equal(st.review.lanes, 4);
+  assert.equal(st.review.lanes_reason, 'codex limit — 레인이 대체');
+});
+
+test('issue-set --review: review.lanes_when=never 는 레인 기록 자체를 막고, always 는 이유 없이 허용한다', () => {
+  for (const [when, expect] of [['never', 1], ['always', 0]]) {
+    const dir = makeRepo();
+    const cfgPath = join(dir, '.claude/harness.json');
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    cfg.review = { ...(cfg.review ?? {}), lanes_when: when };
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+    start(dir, 'ABC-1');
+    const reviewFile = join(dir, 'review.json');
+    writeFileSync(reviewFile, JSON.stringify({ codex: 'ok(0 blockers)', lanes: 4, findings: [] }));
+    const r = setCmd(dir, ['--review', reviewFile]);
+    assert.equal(r.status, expect, `lanes_when=${when}: ${r.err}`);
+    if (when === 'never') assert.ok(r.err.includes('never'), r.err);
+  }
+});

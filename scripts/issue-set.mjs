@@ -13,7 +13,7 @@
 //        [--dod '<json>']...
 //        [--dod-result <id> <PASS|FAIL|SKIPPED>]...
 //        [--merge <file.json> [--from plan]]
-//        [--review <file.json> [--delta]]   ← 파일 키: round? · codex(string) · lanes(integer) · findings(array|integer) · blockers_open?
+//        [--review <file.json> [--delta]]   ← 파일 키: round? · codex(string) · lanes(integer) · lanes_reason? · findings(array|integer) · blockers_open?
 //        [--print]
 //
 // 종료 코드: 0 정상 · 1 도메인 위반(잘못된 stage·JSON 파싱 실패·금지 키·알 수 없는 dod id 등) · 2 사용법/설정/상태 없음.
@@ -179,6 +179,13 @@ if (args.review) {
     : (typeof patch.findings === 'number' ? patch.findings : (state.review?.findings ?? 0));
   const blockersOpen = patch.blockers_open != null ? patch.blockers_open
     : (findingsArr ? findingsArr.filter(f => String(f.severity ?? '').toUpperCase() === 'BLOCKER').length : (state.review?.blockers_open ?? 0));
+  // Codex 판정 위에 Claude 레인을 더 돌렸으면 이유를 기록하게 한다 — 같은 diff 를 두 번 심판하는 것이 기본값이 되지 않도록(review.lanes_when).
+  const lanesUsed = typeof patch.lanes === 'number' ? patch.lanes : 0;
+  const lanesWhen = cfg.review.lanes_when ?? 'codex_gap';
+  if (lanesUsed > 0 && lanesWhen === 'never') fail(1, `review.lanes_when=never 인데 레인 ${lanesUsed}개를 기록하려 한다 — 리뷰는 Codex 판정으로 끝낸다`);
+  if (lanesUsed > 0 && lanesWhen === 'codex_gap' && !patch.lanes_reason) {
+    fail(1, `레인 ${lanesUsed}개를 돌렸으면 lanes_reason 이 필요하다 — Codex 가 판정을 냈으면 같은 diff 를 Claude 레인으로 다시 심판하지 않는다. 이유 예: "codex limit", "codex 가 못 보는 축: 브라우저 실측". 매번 돌리려면 harness.json 의 review.lanes_when=always`);
+  }
   const prevRound = state.review?.round ?? 0;
   const round = patch.round != null ? patch.round : (args.reviewDelta ? prevRound : prevRound + 1);
   const deltaPasses = args.reviewDelta ? (state.review?.delta_passes ?? 0) + 1 : 0;
@@ -187,6 +194,7 @@ if (args.review) {
     tree, files, at: now(),
     ...(patch.codex !== undefined ? { codex: patch.codex } : {}),
     ...(patch.lanes !== undefined ? { lanes: patch.lanes } : {}),
+    ...(patch.lanes_reason !== undefined ? { lanes_reason: patch.lanes_reason } : {}),
     findings: findingsCount,
     blockers_open: blockersOpen,
     round,

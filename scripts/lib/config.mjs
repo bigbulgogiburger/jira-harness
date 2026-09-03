@@ -14,7 +14,7 @@ export const DEFAULTS = Object.freeze({
   runtime_dir: '.claude/runtime',
   docs_only_paths: ['docs/**', '**/*.md'],
   fingerprint_exclude: ['.claude/runtime/**', '**/*.draft'],
-  review: { codex: true, codex_timeout: 2400, lanes_max: 4, lane_model: 'sonnet', rounds_max: 2, code_review: false },
+  review: { codex: true, codex_timeout: 2400, lanes_max: 4, lanes_when: 'codex_gap', lane_model: 'sonnet', rounds_max: 2, code_review: false },
   models: { orchestrate: 'inherit', design: 'opus', recon: 'sonnet', implement: 'opus', verify: 'sonnet' },
   wiki: { index: 'docs/INDEX.md', log: 'docs/LOG.md', schema: 'docs/INDEX-SCHEMA.md', dev_guide: 'docs/{KEY}-dev-guide.md', synthesis_dir: null, max_pages_per_closure: 3, claude_md_max_lines: 150 },
   jira: { start_transition: 'In Progress', done_transition: 'QA', comment_lang: 'ko' },
