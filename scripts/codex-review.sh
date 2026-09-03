@@ -4,11 +4,13 @@
 # =============================================================================
 # 배경: codex exec 는 non-TTY 파이프 stdin 에서 무한 블록되는 문서화된 결함이 있다
 #   (openai/codex #20919, #27019 — "Reading additional input from stdin" deadlock).
-#   보장 4가지:
+#   보장 5가지:
 #   a. stdin 봉인   — 모든 호출에 < /dev/null (deadlock 원천 차단)
 #   b. 출력 파일화  — stdout pipe 캡처 금지 (큰 출력의 pipe 버퍼 데드락 차단)
 #   c. 이중 타임박스 — hard timeout(기본 900s) + 무진행 watchdog(기본 180s 출력 불변 시 kill)
 #   d. 호출 계측    — <runtime_dir>/codex-invocations.log 에 1줄/호출
+#   e. diff 파일화  — diff 본문은 argv 에 넣지 않는다. <out>.diff 로 쓰고 프롬프트에는 경로만 준다.
+#                    (Windows CreateProcess 인자 한계 32K — 65파일 diff 를 인자로 넘기면 codex 가 exit 126 으로 죽는다)
 #   Windows 일부 환경(사내 GPO 등으로 secondary logon 이 막힌 경우)에서는 codex 기본 샌드박스가
 #   자식 프로세스 기동에 실패해(에러 1385) exit 0 인데 실제로는 아무 것도 못 읽은 채 끝나는 사례가
 #   있다 — review/critique 는 read-only 작업이라 danger-full-access 샌드박스가 더 안전하다.
@@ -30,7 +32,7 @@
 #   없으면 status=missing(조용히 통과시키지 않는다). 타임아웃/캡 절단은 status=fail.
 #
 #   마지막 stdout 줄은 정확히 다음 형식(그 외 로그는 전부 stderr):
-#     CODEX_RESULT={"status":"ok|limit|fail|missing","blockers":N,"verdict":"PASS|BLOCK|UNKNOWN","out":"<path>","files":N,"reason":"..."}
+#     CODEX_RESULT={"status":"ok|limit|fail|missing","blockers":N,"verdict":"PASS|BLOCK|UNKNOWN","out":"<path>","diff":"<path>","files":N,"reason":"..."}
 #   종료 코드: ok=0(blockers 가 있어도 0 — 판정은 호출측이 한다) / limit|fail|missing=1
 #
 #   env: CODEX_TIMEOUT(=--timeout 기본값, 기본 900) · CODEX_STALL(기본 180) ·
@@ -84,9 +86,10 @@ branch_slug() {
   printf '%s' "$b" | sed -E 's/[^A-Za-z0-9._-]/_/g'
 }
 
-emit_result() { # status blockers verdict out files reason
-  printf 'CODEX_RESULT={"status":"%s","blockers":%s,"verdict":"%s","out":"%s","files":%s,"reason":"%s"}\n' \
-    "$1" "$2" "$3" "$(json_escape "$4")" "$5" "$(json_escape "$6")"
+DIFF_OUT=""
+emit_result() { # status blockers verdict out files reason   (diff 경로는 전역 DIFF_OUT — 산출 전이면 빈 문자열)
+  printf 'CODEX_RESULT={"status":"%s","blockers":%s,"verdict":"%s","out":"%s","diff":"%s","files":%s,"reason":"%s"}\n' \
+    "$1" "$2" "$3" "$(json_escape "$4")" "$(json_escape "$DIFF_OUT")" "$5" "$(json_escape "$6")"
 }
 
 # ---------- 저장소 루트 · harness.json ----------
@@ -166,6 +169,11 @@ fi
 OUT_PATH="$(fwd_slash "$OUT_PATH")"
 mkdir -p "$(dirname "$OUT_PATH")" 2>/dev/null
 
+# diff 는 보고서 옆에 파일로 남긴다 — codex 에는 이 경로만 준다(보장 e). 리뷰 뒤에도 "무엇을 봤나" 의 증거로 남는다.
+DIFF_OUT="${OUT_PATH%.md}.diff"
+cp "$DIFF_FILE" "$DIFF_OUT" 2>/dev/null || : > "$DIFF_OUT"
+DIFF_BYTES="$(wc -c < "$DIFF_OUT" 2>/dev/null | tr -d ' ')"
+
 write_report() { # body-file-or-empty note
   {
     echo "# Codex Review"
@@ -173,6 +181,7 @@ write_report() { # body-file-or-empty note
     echo "- branch: $BRANCH"
     echo "- tree: $TREE_FOR_META"
     echo "- files: $FILES_COUNT"
+    echo "- diff: $DIFF_OUT (${DIFF_BYTES:-0} bytes)"
     echo "- model: ${MODEL:-(default)}"
     echo "- timestamp: $TS_UTC"
     echo
@@ -236,16 +245,31 @@ else
   BASE_PROMPT="$DEFAULT_PROMPT"
 fi
 
+# 프롬프트(=codex 의 argv 하나)에는 diff 본문을 넣지 않는다 — 경로와 파일 목록만. Windows 인자 한계(32K) 안에 머문다.
 PROMPT_FILE="$TMP_DIR/prompt.txt"
-{
-  printf '%s\n' "$BASE_PROMPT"
-  echo
-  echo "---"
-  echo
-  echo "# 대상 diff (${FILES_COUNT}개 파일)"
-  echo
-  cat "$DIFF_FILE"
-} > "$PROMPT_FILE"
+ARGV_LIMIT=30000
+build_prompt() { # file-list-max
+  {
+    printf '%s\n' "$BASE_PROMPT"
+    echo
+    echo "---"
+    echo
+    echo "# 대상 diff (${FILES_COUNT}개 파일, ${DIFF_BYTES:-0} bytes)"
+    echo
+    echo "diff 본문은 이 프롬프트에 없다. 아래 파일(unified diff, UTF-8)을 먼저 읽고 그 내용을 리뷰하라:"
+    echo "  $DIFF_OUT"
+    echo
+    echo "대상 파일 목록(최대 ${1}개):"
+    printf '%s\n' "$FILES" | sed '/^$/d' | head -n "$1" | sed 's/^/- /'
+  } > "$PROMPT_FILE"
+}
+build_prompt 200
+if [[ "$(wc -c < "$PROMPT_FILE" | tr -d ' ')" -gt "$ARGV_LIMIT" ]]; then
+  build_prompt 20
+  if [[ "$(wc -c < "$PROMPT_FILE" | tr -d ' ')" -gt "$ARGV_LIMIT" ]]; then
+    echo "[codex-review] 경고: 프롬프트가 ${ARGV_LIMIT}B 를 넘는다(--prompt-file 이 큰가?) — Windows 에서 exit 126 이 날 수 있다" >&2
+  fi
+fi
 
 # ---------- codex 호출 (stdin 봉인 + 출력 파일화 + 이중 타임박스) ----------
 RAW_OUT="$TMP_DIR/codex-out.txt"

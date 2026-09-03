@@ -42,6 +42,14 @@ case "\${FAKE_CODEX_MODE:-2}" in
     sleep 30
     exit 0
     ;;
+  5)
+    # argv 계측 — 마지막 인자(프롬프트)의 길이와 diff 마커 포함 여부를 파일에 남긴다
+    last="\${@: -1}"
+    { echo "argc=$#"; echo "lastlen=\${#last}"; case "$last" in *__DIFF_MARKER_ZZ__*) echo "marker=inline" ;; *) echo "marker=absent" ;; esac; } > "$FAKE_CODEX_ARGS_OUT"
+    printf '%s' "$last" > "$FAKE_CODEX_ARGS_OUT.prompt"
+    echo "Verdict: PASS"
+    exit 0
+    ;;
 esac
 `;
 
@@ -171,6 +179,27 @@ test('codex 가 PATH 에 없으면 status=missing, exit 1, 조용히 통과시�
   assert.ok(existsSync(r.result.out), 'missing 이어도 out 파일은 메타와 함께 남는다');
   const body = readFileSync(r.result.out, 'utf8');
   assert.match(body, /PATH 에서 찾을 수 없어/);
+});
+
+test('큰 diff(65파일·200KB)는 argv 가 아니라 파일로 넘긴다 — 인자 길이 32K 안 · .diff 파일 존재 · 프롬프트에 경로', () => {
+  const { dir } = makeRepo();
+  // 파일 65개 × 3KB 수정 → diff ≈ 200KB. Windows CreateProcess 인자 한계(32K)를 훌쩍 넘긴다 — 종전엔 codex exit 126.
+  for (let i = 0; i < 65; i++) writeFileSync(join(dir, `f${i}.txt`), `__DIFF_MARKER_ZZ__ ${i}\n${'x'.repeat(3000)}\n`);
+  g(dir, 'add', '-A');
+  const bin = makeFixtureBin();
+  const argsOut = join(dir, 'argv.txt');
+  const r = run(dir, [], { PATH: pathWithFixture(bin), FAKE_CODEX_MODE: '5', FAKE_CODEX_ARGS_OUT: argsOut });
+  assert.equal(r.result.status, 'ok', JSON.stringify(r.result));
+  assert.ok(r.result.files >= 65, `files=${r.result.files}`);
+  const meta = Object.fromEntries(readFileSync(argsOut, 'utf8').trim().split(/\r?\n/).map(l => l.split('=')));
+  assert.equal(meta.marker, 'absent', 'diff 본문이 argv 에 들어가면 안 된다');
+  assert.ok(Number(meta.lastlen) < 30000, `프롬프트 인자 ${meta.lastlen}B — 32K 한계 안이어야 한다`);
+  const diffPath = r.result.diff;
+  assert.ok(diffPath && existsSync(diffPath), `diff 파일 없음: ${diffPath}`);
+  assert.match(readFileSync(diffPath, 'utf8'), /__DIFF_MARKER_ZZ__ 64/);
+  const prompt = readFileSync(`${argsOut}.prompt`, 'utf8');
+  assert.ok(prompt.includes(diffPath), '프롬프트가 diff 파일 경로를 가리켜야 한다');
+  assert.match(readFileSync(r.result.out, 'utf8'), /- diff: /);
 });
 
 test('runtime_dir 는 harness.json 값을 따른다(기본 .claude/runtime 이 아니라 .claude/rt)', () => {
