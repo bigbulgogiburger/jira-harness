@@ -187,6 +187,27 @@
         "type": "string"
       }
     },
+    "herdr": {
+      "type": "object",
+      "description": "Herdr(터미널 워크스페이스) 연동. Herdr 밖(HERDR_PANE_ID 없음)에서는 설정과 무관하게 아무것도 하지 않는다",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "false 면 사이드바 토큰·알림·레인 실행기 전부 끈다. 기본 true" },
+        "notify": { "type": "boolean", "description": "false 면 토스트 알림만 끈다(사이드바 토큰은 유지). 기본 true" },
+        "lanes": { "type": "string", "enum": ["off", "verify", "all"], "description": "Herdr pane 을 레인 실행기로 쓰는 범위 — off(기본) · verify(리뷰 레인만) · all(예약)" },
+        "kinds": {
+          "type": "object",
+          "description": "레인 종류별 에이전트 kind 목록(herdr agent start --kind). 예 verify: [\"codex\",\"grok\"]",
+          "properties": { "verify": { "type": "array", "items": { "type": "string" } } }
+        },
+        "kind_args": {
+          "type": "object",
+          "description": "kind 별 네이티브 인자(`agent start … -- <args>`). 예 codex: [\"--sandbox\",\"danger-full-access\",\"--ask-for-approval\",\"never\"]",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+        },
+        "lane_timeout_s": { "type": "integer", "minimum": 30, "description": "레인 1개의 응답 대기 상한(초). 기본 900" },
+        "close_panes": { "type": "boolean", "description": "레인이 끝나면 pane 을 닫는다. 기본 false(사람이 화면을 본다)" }
+      }
+    },
     "gate": {
       "type": "object",
       "properties": {

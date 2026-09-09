@@ -13,6 +13,7 @@ import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readStat
 import { currentBranch, git, stagedFiles, unstagedFiles, untrackedFiles } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
 import { treeAccepted, sha256File } from './lib/gate-core.mjs';
+import { herdrPing } from './lib/herdr.mjs';
 
 // ---------- 인자 ----------
 const argv = process.argv.slice(2);
@@ -41,6 +42,7 @@ function countLines(text) {
 /** 거부·오류 종료 — 라우터가 stderr 한 줄로 SKILL.md §3 표에 대응한다 */
 function reject(code, reason, extra = {}, exitCode = 1) {
   console.error(`[jira-harness] complete: ${code} — ${reason}`);
+  herdrPing(cwd, `complete ${code}`, { title: `complete 거부 ${code}`, body: reason, sound: 'request' });
   if (asJson) console.log(JSON.stringify({ code, reason, ...extra }));
   process.exit(exitCode);
 }
@@ -245,6 +247,7 @@ for (const f of sidecars) {
 // ---------- 출력 ----------
 const payload = { code: 'OK', branch, keys, pushed, archived_to: archiveRel, sidecars: movedSidecars, jira, summary };
 console.error(`[jira-harness] complete: OK — ${branch} · push ${pushed ? '완료' : '생략'} · ${archiveRel}`);
+herdrPing(cwd, `complete ${keys.join(',')}`, { title: `${keys.join(',')} complete`, body: `${branch} · push ${pushed ? '완료' : '생략'} · 머지는 사람`, sound: 'done' });
 if (asJson) console.log(JSON.stringify(payload));
 else {
   console.log(`[complete] OK · ${branch} (${keys.join(', ')})`);

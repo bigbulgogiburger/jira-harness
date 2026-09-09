@@ -97,6 +97,7 @@ node "<P>/scripts/setup.mjs" inject --json
 - [references/stack-defaults.md](references/stack-defaults.md) — 스택별 기본 게이트 명령 + 흔한 보정
 - [references/injection.md](references/injection.md) — 위반 주입 4종 + 헤드리스/worktree 확인 절차
 - [references/upgrade.md](references/upgrade.md) — v2 → v3 매핑표
+- [references/herdr.md](references/herdr.md) — Herdr 연동(사이드바 토큰·사람 게이트 알림·Herdr 플러그인 설치·리뷰 레인 실행기). `herdr` 가 PATH 에 있으면 check 단계에서 §5 전제를 함께 점검하고, 설정 스니펫은 **사용자에게 보여만 준다**(config.toml 은 사용자가 고친다)
 
 ## Notes
 

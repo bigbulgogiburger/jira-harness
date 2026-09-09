@@ -22,6 +22,7 @@ import { relative, resolve } from 'node:path';
 import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, writeState, deepMerge } from './lib/config.mjs';
 import { currentBranch, changedVsHead, stagedFiles, pinRef } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
+import { herdrPing } from './lib/herdr.mjs';
 
 const STAGES = ['start', 'grill', 'plan', 'implement', 'review', 'gate', 'complete', 'archived'];
 const DOD_STATUSES = ['PASS', 'FAIL', 'SKIPPED'];
@@ -208,6 +209,9 @@ if (args.review) {
 if (mutated) {
   try { writeState(sPath, state); }
   catch (e) { fail(1, `상태 저장 실패(스키마 위반 가능): ${e.message}`); }
+  // Herdr 사이드바(Herdr 밖이면 무동작). 리뷰에 blocker 가 남으면 사람을 부른다.
+  const ev = args.review ? `review r${state.review.round} b${state.review.blockers_open}` : args.stage !== null ? `stage ${args.stage}` : args.merge ? 'plan merged' : null;
+  if (ev) herdrPing(root, ev, args.review && state.review.blockers_open > 0 ? { title: `${state.keys.join(',')} 리뷰 blocker ${state.review.blockers_open}`, sound: 'request' } : null);
 }
 
 // ---------- 출력 ----------

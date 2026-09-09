@@ -13,6 +13,7 @@ import { currentBranch, git, stagedFiles, untrackedFiles, changedVsHead, pinRef 
 import { fingerprintTree } from './lib/tree.mjs';
 import { parseTestCount, stripAnsi } from './lib/probe.mjs';
 import { resolveShell as resolveShellLib } from './lib/shell.mjs';
+import { herdrPing } from './lib/herdr.mjs';
 
 // ---------- 인자 ----------
 const argv = process.argv.slice(2);
@@ -167,6 +168,10 @@ state.gate = {
 state.history = [...(state.history ?? []), { stage: 'gate', at, note: `${level} ${overall} ${duration_s}s` }];
 writeState(sPath, state);
 try { pinRef(`refs/harness/${parsed.slug}/gate`, tree, root); } catch (e) { console.error(`[gate] ref 고정 실패(무시): ${e.message}`); }
+// Herdr 사이드바·알림(Herdr 밖이면 무동작). FAIL 은 사람을 부르고(request), 전량 PASS 는 끝났다고 알린다(done).
+herdrPing(cwd, `gate ${level} ${overall}`, overall === 'FAIL'
+  ? { title: `${state.keys.join(',')} gate ${level} FAIL`, body: Object.entries(results).filter(([, v]) => v === 'FAIL').map(([k]) => k).join(', ') || 'FAIL', sound: 'request' }
+  : level === 'full' ? { title: `${state.keys.join(',')} gate full PASS`, body: `${duration_s}s · push 가능`, sound: 'done' } : null);
 
 const summary = { level, overall, tree, results, stacks: stacksOut, dod: dodSummary, duration_s, log: logRel, state: relative(configRoot, sPath).replace(/\\/g, '/') };
 if (json) console.log(JSON.stringify(summary, null, 2));

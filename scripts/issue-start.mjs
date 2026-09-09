@@ -16,6 +16,7 @@ const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 import { currentBranch, git, unstagedFiles, untrackedFiles } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
 import { treeAccepted } from './lib/gate-core.mjs';
+import { herdrPing } from './lib/herdr.mjs';
 
 // ---------- 인자 ----------
 const argv = process.argv.slice(2);
@@ -179,6 +180,7 @@ if (state) {
   created = true;
   code = scenario === 'adopt' ? 'ADOPTED' : 'STARTED';
 }
+herdrPing(cwd, `${code.toLowerCase()} ${keys.join(',')}`);
 
 // Workflow 툴은 작업 디렉토리 밖의 scriptPath 를 거부한다 — 플러그인 워크플로를 프로젝트 runtime 안으로 복사해 두어야
 // `jira-harness:<이름>` 이름 해석이 안 되는 세션(플러그인이 세션 시작 뒤에 생긴 경우 등)에서도 scriptPath 폴백이 된다.

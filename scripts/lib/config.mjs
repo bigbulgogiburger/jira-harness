@@ -14,6 +14,7 @@ export const DEFAULTS = Object.freeze({
   runtime_dir: '.claude/runtime',
   docs_only_paths: ['docs/**', '**/*.md'],
   fingerprint_exclude: ['.claude/runtime/**', '**/*.draft'],
+  herdr: { enabled: true, notify: true, lanes: 'off', kinds: { verify: ['codex'] }, kind_args: {}, lane_timeout_s: 900, close_panes: false },
   review: { codex: true, codex_timeout: 2400, lanes_max: 4, lanes_when: 'codex_gap', lane_model: 'sonnet', rounds_max: 2, code_review: false },
   models: { orchestrate: 'inherit', design: 'opus', recon: 'sonnet', implement: 'opus', verify: 'sonnet' },
   wiki: { index: 'docs/INDEX.md', log: 'docs/LOG.md', schema: 'docs/INDEX-SCHEMA.md', dev_guide: 'docs/{KEY}-dev-guide.md', synthesis_dir: null, max_pages_per_closure: 3, claude_md_max_lines: 150 },
@@ -42,7 +43,8 @@ export function loadConfig(configPath) {
   const raw = JSON.parse(readFileSync(configPath, 'utf8'));
   assertValid(raw, 'harness', configPath);
   const cfg = { ...DEFAULTS, ...raw };
-  for (const k of ['review', 'models', 'wiki', 'jira', 'gate']) cfg[k] = { ...DEFAULTS[k], ...(raw[k] ?? {}) };
+  for (const k of ['review', 'models', 'wiki', 'jira', 'gate', 'herdr']) cfg[k] = { ...DEFAULTS[k], ...(raw[k] ?? {}) };
+  cfg.herdr.kinds = { ...DEFAULTS.herdr.kinds, ...(raw.herdr?.kinds ?? {}) };
   for (const [name, s] of Object.entries(cfg.stacks)) {
     cfg.stacks[name] = { compile: null, lint: null, build: null, test: null, extra: [], env_file: null, ...s };
     if (!cfg.stacks[name].paths) cfg.stacks[name].paths = s.dir === '.' ? ['**'] : [`${s.dir.replace(/\/$/, '')}/**`];

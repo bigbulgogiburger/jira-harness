@@ -35,6 +35,8 @@ claude plugin install jira-harness@bigbulgogiburger
 | `scripts/safe-commit.mjs` | 훅이 발화하지 않는 경로(헤드리스·무인)에서 같은 판정 후 커밋 |
 | `scripts/codex-review.sh` | Codex CLI 리뷰 래퍼(본문 끝으로 판정, 한도 소진을 감추지 않음) |
 | `scripts/wiki-row.mjs` `wiki-lint.mjs` `memory-index.mjs` | 마크다운 wiki 표 upsert · 정합 점검 · 자동 메모리 인덱스 |
+| `scripts/lib/herdr.mjs` · `scripts/herdr-report.mjs` · `herdr-plugin.toml` · `scripts/herdr-plugin.mjs` | [Herdr](https://herdr.dev) 연동 — 이슈·stage·게이트·리뷰를 사이드바 토큰(`$case $stage $gate $review`)으로, 사람 게이트(게이트 FAIL·리뷰 blocker·훅 거부·승인 대기)는 토스트로. 같은 저장소가 Herdr 플러그인이기도 하다(팝업 status/gate · `worktree.created` 이벤트로 자동 착수). Herdr 밖에서는 전부 무동작 |
+| `scripts/herdr-lanes.mjs` | Herdr pane 의 **다른 에이전트**(codex·grok…)를 리뷰 레인으로 돌리는 실행기 — `harness.json.herdr.lanes = "verify"`. 결과는 사이드카 JSON 파일로 회수(alt-screen 스크롤백을 믿지 않는다) |
 | `agents/` | 스택별 제네릭 리뷰어·탐색기(Spring / Vue / cross-repo) — verify 워크플로의 dispatch 대상 |
 | `schemas/` | `harness.json`(프로젝트 설정) · 상태 JSON 스키마 |
 
@@ -50,9 +52,20 @@ claude plugin install jira-harness@bigbulgogiburger
 
 브랜치가 `branch_pattern` 밖이면 `BRANCH_PATTERN` 으로 막습니다. 혼자 쓰는 저장소라 이슈 브랜치를 로컬에서 머지한 뒤 `main` 을 직접 올리는 흐름이라면 `"default_branch_policy": "allow"` 로 **그 브랜치에서만** 판정을 끕니다(기본 `deny` — 켜지 않은 프로젝트의 동작은 그대로). `allow` 를 켜도 이슈 브랜치의 사다리(상태·게이트·리뷰)는 전혀 바뀌지 않습니다.
 
+## Herdr 와 같이 쓰기(선택)
+
+[Herdr](https://herdr.dev) 안에서 Claude Code 를 돌리면 jira-harness 가 자동으로 사이드바에 상태를 올리고 사람이 봐야 할 순간에 토스트를 띄웁니다. 설정은 `config.toml` 의 사이드바 행 선언 한 번뿐입니다:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "$case", "$stage"], ["$gate", "$review"]]
+```
+
+Herdr 플러그인으로도 설치됩니다 — `herdr plugin install bigbulgogiburger/jira-harness` (팝업 `status` · `gate-commit` · `gate-full`, 액션 `report` · `adopt-branch`, 이벤트 `worktree.created` → 자동 착수). 리뷰 레인을 codex·grok pane 으로 돌리려면 `harness.json.herdr.lanes = "verify"`. 자세한 것은 [`skills/setup/references/herdr.md`](skills/setup/references/herdr.md) 와 [`skills/issue/references/herdr-lanes.md`](skills/issue/references/herdr-lanes.md).
+
 ## 요구 사항
 
-Node.js 20+, git. Windows 는 Git Bash(게이트 명령 실행용). Codex CLI 는 선택(없으면 리뷰 1단계를 건너뛰고 그렇게 기록). Jira 연동은 Atlassian MCP 가 있을 때만(없어도 코드 진행은 막지 않음).
+Node.js 20+, git. Windows 는 Git Bash(게이트 명령 실행용). Codex CLI 는 선택(없으면 리뷰 1단계를 건너뛰고 그렇게 기록). Jira 연동은 Atlassian MCP 가 있을 때만(없어도 코드 진행은 막지 않음). Herdr 는 선택(없으면 연동 지점이 전부 무동작).
 
 ## 개발
 
