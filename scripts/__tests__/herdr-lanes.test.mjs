@@ -67,13 +67,13 @@ test('run: 정상 경로 — split → start(kind_args 기본) → 프롬프트 
   assert.equal(l.nudged, false);
   const c = calls(log);
   const names = c.map(a => `${a[0]} ${a[1]}`);
-  assert.deepEqual(names.slice(0, 4), ['pane split', 'pane rename', 'agent start', 'agent prompt']);
-  const split = c[0];
+  assert.deepEqual(names.slice(0, 5), ['agent list', 'pane split', 'pane rename', 'agent start', 'agent prompt']);
+  const split = c[1];
   assert.ok(split.includes('--pane') && split.includes('w1:p1') && split.includes('--no-focus') && split.includes('--cwd'));
-  const start = c[2];
+  const start = c[3];
   assert.deepEqual(start.slice(0, 7), ['agent', 'start', 'a', '--kind', 'codex', '--pane', 'w1:p9']);
   if (process.platform === 'win32') assert.ok(start.includes('--sandbox') && start.includes('danger-full-access'), 'Windows codex 샌드박스 해제 기본값');
-  const prompt = c[3];
+  const prompt = c[4];
   assert.match(prompt[3], /^Read the file .*a\.json\.prompt\.md and do exactly/);
   const pf = readFileSync(`${out}.prompt.md`, 'utf8');
   assert.match(pf, /리뷰해라/);

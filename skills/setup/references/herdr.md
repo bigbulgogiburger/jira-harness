@@ -87,9 +87,21 @@ command = "bigbulgogiburger.jira-harness.report"
 
 Workflow 서브에이전트 대신 **Herdr pane 의 다른 에이전트**(codex·grok·claude …)를 레인으로 쓴다. 기본 `off`. `verify` 면 리뷰 레인(`all` 은 예약). 절차·함정·설정은 [`skills/issue/references/herdr-lanes.md`](../../issue/references/herdr-lanes.md).
 
+역할 세 개가 워크스페이스에 상주한다(A 단계):
+
+| 역할 | 켜는 값 | 무엇 |
+|------|--------|------|
+| reviewer | `review.codex_via: "herdr"` | Codex 판정을 `codex exec` 대신 상주 codex pane 으로. 있으면 재사용, 없으면 띄움. 컨텍스트는 `herdr.reviewer_context`(issue/always/never) |
+| runner | 항상(Herdr 안이면) | 게이트를 runner pane 에서 — `herdr-lanes.mjs gate --full [--no-wait]`. 로그가 driver 컨텍스트 밖에 남는다 |
+| lane | `herdr.lanes: "verify"` | 추가 심판(grok 등) 레인 |
+
+driver(Claude) 는 판단·결정·훅만 갖고, 긴 출력은 전부 pane 과 파일로 나간다. codex 는 조언자다 — 커밋은 driver 의 훅·safe-commit 만 통과한다.
+
 ```jsonc
+"review": { "codex_via": "herdr" },
 "herdr": {
   "lanes": "verify",
+  "reviewer_context": "issue",
   "kinds": { "verify": ["codex", "grok"] },
   "kind_args": { "codex": ["--sandbox", "danger-full-access", "--ask-for-approval", "never"] },
   "lane_timeout_s": 900,

@@ -81,6 +81,7 @@
         "codex": {
           "type": "boolean"
         },
+        "codex_via": { "type": "string", "enum": ["exec", "herdr"], "description": "Codex 리뷰 경로 — exec(기본, codex-review.sh 가 codex exec 를 매번 새로 띄운다) · herdr(Herdr 안이면 상주 codex pane 을 재사용 — herdr-lanes.mjs codex-review. Herdr 밖이면 exec 로 폴백)" },
         "codex_timeout": {
           "type": "integer",
           "minimum": 60
@@ -205,6 +206,7 @@
           "additionalProperties": { "type": "array", "items": { "type": "string" } }
         },
         "lane_timeout_s": { "type": "integer", "minimum": 30, "description": "레인 1개의 응답 대기 상한(초). 기본 900" },
+        "reviewer_context": { "type": "string", "enum": ["issue", "always", "never"], "description": "상주 reviewer 의 컨텍스트를 언제 비우나(/new) — issue(기본: 이슈 slug 가 바뀌면) · always(매 호출) · never" },
         "close_panes": { "type": "boolean", "description": "레인이 끝나면 pane 을 닫는다. 기본 false(사람이 화면을 본다)" }
       }
     },

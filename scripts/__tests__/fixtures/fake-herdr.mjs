@@ -3,6 +3,7 @@
 //   FAKE_HERDR_STATES=working,done  `agent get` 이 호출마다 순서대로 돌려줄 상태(마지막 값 반복). 기본 done
 //   FAKE_HERDR_STATE_FILE=<path>    호출 횟수 카운터 파일(순서 상태용)
 //   FAKE_HERDR_READ=<text>          `agent read`/`pane read` 본문
+//   FAKE_HERDR_AGENTS=<json>        `agent list` 응답(재사용 판정용) · FAKE_HERDR_PANE_MISSING=1 이면 `pane get` 이 not_found
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (process.env.FAKE_HERDR_LOG) appendFileSync(process.env.FAKE_HERDR_LOG, JSON.stringify(args) + '\n');
@@ -17,6 +18,9 @@ function nextState() {
   return seq[Math.min(n, seq.length - 1)];
 }
 if (a === 'pane' && b === 'split') out({ result: { pane: { pane_id: 'w1:p9', workspace_id: 'w1', tab_id: 'w1:t1' } } });
+else if (a === 'pane' && b === 'get') { if (process.env.FAKE_HERDR_PANE_MISSING) { process.stderr.write('{"error":{"code":"not_found"}}'); process.exit(1); } out({ result: { pane: { pane_id: args[2] } } }); }
+else if (a === 'pane' && b === 'wait-output') out({ result: { matched: true } });
+else if (a === 'agent' && b === 'rename') out({ result: { renamed: true } });
 else if (a === 'pane' && b === 'close') out({ result: { closed: args[2] } });
 else if (a === 'pane' && (b === 'report-metadata' || b === 'run' || b === 'send-keys')) out({ result: { ok: true } });
 else if (a === 'pane' && b === 'read') process.stdout.write(process.env.FAKE_HERDR_READ ?? '');
@@ -29,6 +33,6 @@ else if (a === 'agent' && b === 'get') out({ result: { agent: { name: args[2], s
 else if (a === 'agent' && b === 'wait') out({ result: { state: nextState() } });
 else if (a === 'agent' && b === 'read') process.stdout.write(process.env.FAKE_HERDR_READ ?? '');
 else if (a === 'agent' && b === 'send-keys') out({ result: { sent: args.slice(3) } });
-else if (a === 'agent' && b === 'list') out({ result: { agents: [] } });
+else if (a === 'agent' && b === 'list') out({ result: { agents: process.env.FAKE_HERDR_AGENTS ? JSON.parse(process.env.FAKE_HERDR_AGENTS) : [] } });
 else out({ result: {} });
 process.exit(0);

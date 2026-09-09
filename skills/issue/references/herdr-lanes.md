@@ -22,6 +22,27 @@
 
 `herdr.lanes=all` 은 스키마에만 예약돼 있다(implement·loop maker/verifier 는 2차) — 지금은 `verify` 와 같게 동작한다.
 
+## 상주 reviewer — Codex 판정 자체를 pane 으로 (`review.codex_via: "herdr"`)
+
+라운드 1 의 1번(Codex 판정)도 pane 으로 옮길 수 있다. `codex-review.sh` 는 호출마다 `codex exec` 를 새로 띄워 저장소를 처음부터 보고, 출력 상한에 잘리며, 화면이 없다. 상주 codex 는 셋 다 없다.
+
+```bash
+node "<P>/scripts/herdr-lanes.mjs" codex-review [--since <tree>] --files "<a,b>" --slug "<slug>" [--axes "…"] --cwd <루트> --json
+```
+
+- **있으면 쓰고 없으면 띄운다.** `agent list` 에서 이름 `review-codex` 이거나(같은 kind · 같은 cwd · `idle`/`done`) 인 에이전트를 재사용한다. `working` 이면 `busy` 로 보고한다(기다리거나 다른 이름으로 하나 더).
+- **컨텍스트 수명** `herdr.reviewer_context` — `issue`(기본): 이슈 slug 가 바뀌면 `/new` · `always`: 매 호출 · `never`. 장부는 `<runtime>/herdr/reviewer-codex.json`.
+- **계약은 exec 와 같다.** 마지막 줄 `CODEX_RESULT={"status":"ok|limit|fail|missing",…}`. `limit` 은 pane 결과 파일의 `{"status":"limit"}` 또는 화면의 한도 문구로 판정하고, 감추지 않는다. `missing`(Herdr 밖·설정 exec) 이면 라우터가 `codex-review.sh` 로 간다.
+- 결과 파일 `<runtime>/issues/<slug>.herdr-codex.json`(델타는 `-delta`). 재사용한 pane 은 절대 닫지 않는다.
+
+## runner — 게이트를 driver 밖에서
+
+```bash
+node "<P>/scripts/herdr-lanes.mjs" gate --full|--commit [--stage-all] [--no-wait] --cwd <루트> --json
+```
+
+runner pane(라벨 `runner`, `<runtime>/herdr/runner.json` 에 기억 · `pane get` 으로 생사 확인 후 재사용)에서 `gate-run` 을 돌린다. 한 프로세스가 gate.mjs 실행·결과 파일·완료 표식(`GATE_DONE_<nonce>`)까지 맡아 pane 셸이 bash 든 PowerShell 이든 같다. driver 는 `pane wait-output` 으로 표식만 기다리거나 `--no-wait` 로 바로 돌아와 gate.mjs 의 토스트를 받는다. 게이트 기록(상태 JSON·트리 지문)은 gate.mjs 가 그대로 쓴다 — 훅 판정은 달라지지 않는다.
+
 ## 실행기가 스스로 처리하는 함정(실측 4종)
 
 | 함정 | 증상 | 실행기 처리 |
