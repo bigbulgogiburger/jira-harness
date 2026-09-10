@@ -21,6 +21,28 @@ claude plugin install jira-harness@bigbulgogiburger
 
 업데이트는 `claude plugin update jira-harness` 후 Claude Code 재시작.
 
+## Codex CLI 에서 쓰기
+
+같은 하네스의 **Codex 판**이 [`bigbulgogiburger/jira-harness_codex`](https://github.com/bigbulgogiburger/jira-harness_codex) 에 있습니다.
+
+```bash
+codex plugin marketplace add bigbulgogiburger/jira-harness_codex --ref main
+codex plugin add jira-harness@jira-harness-codex
+```
+
+그 저장소는 **생성물**입니다 — 이 저장소에서 [`caseworker`](https://github.com/bigbulgogiburger/caseworker) 의
+`scripts/build-codex.mjs` 가 통째로 찍어냅니다. 그러니 **고칠 곳은 언제나 여기**이고,
+Codex 에서만 달라야 하는 파일은 이 저장소의 `codex-overlay/` 에 둡니다(생성 시 위에 덮입니다).
+
+```bash
+node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
+```
+
+⚠ **Codex 는 플러그인을 설치해도 그 훅을 신뢰하지 않습니다** — `/hooks` 에서 검토·신뢰하기 전까지
+커밋 게이트는 "있지만 아무것도 막지 않는" 상태입니다. 서브에이전트도 이름으로 부르는 구조가
+아니라 `spawn_agent` 로 띄우고 역할을 프롬프트로 주는 구조라, `agents/` 는 `subagents/*.toml`
+역할 원고로 옮겨집니다. 차이와 미검증 항목은 [Codex 판 README](https://github.com/bigbulgogiburger/jira-harness_codex#readme) 에 정리돼 있습니다.
+
 ## 무엇이 들어 있나
 
 | 구성 요소 | 역할 |
