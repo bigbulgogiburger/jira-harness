@@ -58,7 +58,7 @@ node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
 | `scripts/codex-review.sh` | Codex CLI 리뷰 래퍼(본문 끝으로 판정, 한도 소진을 감추지 않음) |
 | `scripts/wiki-row.mjs` `wiki-lint.mjs` `memory-index.mjs` | 마크다운 wiki 표 upsert · 정합 점검 · 자동 메모리 인덱스 |
 | `scripts/lib/herdr.mjs` · `scripts/herdr-report.mjs` · `herdr-plugin.toml` · `scripts/herdr-plugin.mjs` | [Herdr](https://herdr.dev) 연동 — 이슈·stage·게이트·리뷰를 사이드바 토큰(`$case $stage $gate $review`)으로, 사람 게이트(게이트 FAIL·리뷰 blocker·훅 거부·승인 대기)는 토스트로. 같은 저장소가 Herdr 플러그인이기도 하다(팝업 status/gate · `worktree.created` 이벤트로 자동 착수). Herdr 밖에서는 전부 무동작 |
-| `scripts/herdr-lanes.mjs` | Herdr pane 을 역할로 쓰는 실행기 — **reviewer**(`review.codex_via: "herdr"`: 상주 codex 를 재사용해 Codex 판정, 이슈가 바뀌면 `/new`) · **runner**(`gate --full`: 게이트를 runner pane 에서, 로그는 driver 밖) · **lane**(`herdr.lanes: "verify"`: grok 등 추가 심판). 결과는 사이드카 JSON 파일로 회수(alt-screen 스크롤백을 믿지 않는다) |
+| `scripts/herdr-lanes.mjs` | Herdr pane 을 역할로 쓰는 실행기 — **reviewer**(`review.codex_via: "herdr"`: 상주 codex 를 재사용해 Codex 판정, 이슈가 바뀌면 `/new`) · **runner**(`gate --full`: 게이트를 runner pane 에서, 로그는 driver 밖) · **lane**(`herdr.lanes: "verify"`: grok 등 추가 심판) · **implement**(`herdr.lanes: "implement"`/`"all"`: 상태 JSON 의 레인마다 `lane/<slug>/<name>` worktree 를 파고 plan 이 고른 kind(claude·codex·grok)로 pane 을 띄운 뒤, 끝나면 diff 를 패치로 회수해 메인에 적용 — 레인은 커밋하지 않고 커밋 권한은 메인 훅뿐). 결과는 사이드카 JSON 파일로 회수(alt-screen 스크롤백을 믿지 않는다) |
 | `agents/` | 스택별 제네릭 리뷰어·탐색기(Spring / Vue / cross-repo) — verify 워크플로의 dispatch 대상 |
 | `schemas/` | `harness.json`(프로젝트 설정) · 상태 JSON 스키마 |
 
@@ -83,7 +83,7 @@ node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
 rows = [["state_icon", "workspace", "$case", "$stage"], ["$gate", "$review"]]
 ```
 
-Herdr 플러그인으로도 설치됩니다 — `herdr plugin install bigbulgogiburger/jira-harness` (팝업 `status` · `gate-commit` · `gate-full`, 액션 `report` · `adopt-branch`, 이벤트 `worktree.created` → 자동 착수). 리뷰 레인을 codex·grok pane 으로 돌리려면 `harness.json.herdr.lanes = "verify"`. 자세한 것은 [`skills/setup/references/herdr.md`](skills/setup/references/herdr.md) 와 [`skills/issue/references/herdr-lanes.md`](skills/issue/references/herdr-lanes.md).
+Herdr 플러그인으로도 설치됩니다 — `herdr plugin install bigbulgogiburger/jira-harness` (팝업 `status` · `gate-commit` · `gate-full`, 액션 `report` · `adopt-branch`, 이벤트 `worktree.created` → 자동 착수). 리뷰 레인을 codex·grok pane 으로 돌리려면 `harness.json.herdr.lanes = "verify"`, 구현 레인까지 worktree + kind pane 으로 돌리려면 `"all"`(메인 Claude 는 오케스트레이션·회수·게이트·커밋만). 자세한 것은 [`skills/setup/references/herdr.md`](skills/setup/references/herdr.md) 와 [`skills/issue/references/herdr-lanes.md`](skills/issue/references/herdr-lanes.md).
 
 ## 요구 사항
 

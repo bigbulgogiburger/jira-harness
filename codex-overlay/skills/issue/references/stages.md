@@ -31,7 +31,8 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 ## plan
 
 1. 재료: `issueBodies{KEY: 본문}`(start 에서 읽은 것) · `guidePaths{KEY: 경로}` = `wiki.dev_guide` 템플릿의 `{KEY}` 치환(다중 키는 첫 키로 **한 장** — BE/FE 공통 변경을 별도 가이드로 쪼개지 않는다) · `hasWiki` = `wiki.index` 존재 · `hasMemory` = 자동 메모리 폴더 존재 · `wikiHits[]` = INDEX 에서 키·핵심어를 grep 한 줄(최대 10) · `decisions[]` = 상태 JSON 의 결정 · `sidecarPath` = `<runtime>/issues/<slug>.plan.json` · `repoRoot` = 프로젝트 루트 절대 경로(**필수** — 없으면 에이전트를 띄우기 전에 거부) · 선택 `ts`(ISO 시각 — 스크립트는 시계를 못 쓴다) · `models`(`harness.json.models`).
-2. `workflows/plan.js` 실행 — args `{keys, issueBodies, guidePaths, sidecarPath, repoRoot, hasWiki, hasMemory, wikiHits, decisions, ts?, models?}`. Understand(코드·wiki sonnet / 이슈·메모리 haiku) → Design(opus 1레인 — dev-guide `.draft` 와 사이드카를 **에이전트가 직접** 쓴다) → Verify(sonnet 2레인: 제약·범위). 반환 `{verdict, blockers[], touched[], lanes[], dod[], guides}`. 빈 계획(lanes·dod 가 비었거나 Design 레인이 죽음)은 verify 가 전부 PASS 여도 `BLOCK` 이다.
+   Herdr 안이고 `herdr.lanes` 가 `implement`/`all` 이면 `herdrKinds` = `herdr.kinds.implement`(없으면 `["claude"]`) · `herdrProfiles` = `herdr.kinds.profiles` 를 더해 Design 이 레인마다 `kind`·`kind_reason` 을 고르게 한다.
+2. `workflows/plan.js` 실행 — args `{keys, issueBodies, guidePaths, sidecarPath, repoRoot, hasWiki, hasMemory, wikiHits, decisions, ts?, models?, herdrKinds?, herdrProfiles?}`. Understand(코드·wiki sonnet / 이슈·메모리 haiku) → Design(opus 1레인 — dev-guide `.draft` 와 사이드카를 **에이전트가 직접** 쓴다) → Verify(sonnet 2레인: 제약·범위). 반환 `{verdict, blockers[], touched[], lanes[], dod[], guides}`. 빈 계획(lanes·dod 가 비었거나 Design 레인이 죽음)은 verify 가 전부 PASS 여도 `BLOCK` 이다.
 3. `verdict` 가 `BLOCK` 이면 blockers 를 그대로 보여주고 grill 로 돌아간다(설계를 억지로 통과시키지 않는다).
 4. `issue-set.mjs --merge <sidecarPath> --from plan` — touched·lanes·dod·guides 반영. 그 뒤 `--stage plan`.
 5. 승인: 범위·레인·DoD·되돌리기 비싼 결정을 5~10줄로 보인 뒤 request_user_input(진행(권장) / 수정할 것 있음 / 다시 계획). go/no-go 를 묻지 말고 수정 요청만 받는다.
@@ -43,7 +44,8 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 
 - 레인 1개(기본): 메인이 직접 구현한다. dev-guide 의 DoD 를 작업 목록으로 쓴다.
 - 레인 2개 이상: **Phase 0 공통 계약**(DTO·API 경로·DDL·이벤트 이름)은 메인이 먼저 만들어 커밋한 뒤 `workflows/implement.js` args `{lanes[{name, model, worktree, files[], dod[]}], guidePaths, contracts, sidecarDir, sidecarPrefix, repoRoot, ts, maxTurns?}`(`sidecarDir` = `<runtime>/issues` · `sidecarPrefix` = `<slug>` · `maxTurns` 기본 60 — 턴 상한은 agent() 옵션이 아니라 프롬프트 지시로만 전달된다). 레인은 선언된 `model`(opus/sonnet) 과 `worktree` 플래그대로 돈다. 반환 `{lanes[{name, status, …}], failed[], sidecars[]}` — 죽은 레인은 빠지지 않고 `failed` 에 이름이 남는다. 레인별 사이드카 `<sidecarDir>/<sidecarPrefix>.lane-<name>.json` 을 `issue-set.mjs --merge` 로 반영하고, 레인 경계(seam — 한쪽이 부르고 다른 쪽이 받는 곳)는 메인이 직접 대조한다.
-- 워크플로 레인의 "완주" 는 반환값으로 판정한다 — 산출물 파일이 있다고 완주가 아니다(중간에 죽은 레인도 파일은 남긴다).
+- **Codex 에는 `workflows/implement.js` 를 돌릴 Workflow 툴이 없다.** 레인 2개 이상의 자동 병렬 경로는 **Herdr 구현 레인** 하나다 — Herdr 안이고 `harness.json.herdr.lanes` 가 `implement` 또는 `all` 이면 `node "<P>/scripts/herdr-lanes.mjs" implement --slug <slug> [--lanes a,b] [--contracts-file <Phase 0 계약 md>] [--dry-run] --cwd <루트> --json`. 상태 JSON `lanes[]` 마다 `lane/<slug>/<name>` worktree 를 파고 레인의 `kind`(plan 이 골랐으면 그대로, 없으면 `herdr.kinds.implement` 풀 순서 — codex 자신도 kind 가 될 수 있다)로 pane 에이전트를 띄운다. **Phase 0 계약은 먼저 커밋한다**(worktree 는 HEAD 에서 갈린다 — 출력 `dirty_base` 가 못 보는 목록). 레인은 커밋하지 않고, 끝나면 실행기가 worktree 의 diff 를 패치로 회수해 메인에 적용한다(`applied: yes|conflict|skipped|empty|no-apply` — `conflict` 는 메인이 표식을 푼다). 결과는 실행기가 `issue-set.mjs --lane` 으로 `lanes[].kind·result` 에 남긴다. 절차·함정은 [herdr-lanes.md](herdr-lanes.md) §implement. Herdr 밖·설정 off 면 출력 `ok:false` — 그때는 메인이 레인을 **순차로 직접** 구현한다(위 args 계약의 프롬프트를 `spawn_agent` 에 넘겨도 된다 — 다만 그 결과는 사이드카 파일과 반환값 둘 다로 판정한다).
+- 레인의 "완주" 는 반환값·`lanes[].status` 로 판정한다 — 산출물 파일이 있다고 완주가 아니다(중간에 죽은 레인도 파일은 남긴다). Herdr 레인은 `status` 가 `done` 이고 사이드카가 `failed` 가 아닐 때만 패치가 적용된다.
 - 구현 중간 커밋은 gate → commit 순서 그대로.
 
 ## verify — 리뷰 사다리

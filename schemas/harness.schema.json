@@ -194,12 +194,21 @@
       "properties": {
         "enabled": { "type": "boolean", "description": "false 면 사이드바 토큰·알림·레인 실행기 전부 끈다. 기본 true" },
         "notify": { "type": "boolean", "description": "false 면 토스트 알림만 끈다(사이드바 토큰은 유지). 기본 true" },
-        "lanes": { "type": "string", "enum": ["off", "verify", "all"], "description": "Herdr pane 을 레인 실행기로 쓰는 범위 — off(기본) · verify(리뷰 레인만) · all(예약)" },
+        "lanes": { "type": "string", "enum": ["off", "verify", "implement", "all"], "description": "Herdr pane 을 레인 실행기로 쓰는 범위 — off(기본) · verify(리뷰 레인만) · implement(구현 레인만 — 레인마다 worktree + kind) · all(둘 다)" },
         "kinds": {
           "type": "object",
-          "description": "레인 종류별 에이전트 kind 목록(herdr agent start --kind). 예 verify: [\"codex\",\"grok\"]",
-          "properties": { "verify": { "type": "array", "items": { "type": "string" } } }
+          "description": "레인 종류별 에이전트 kind 목록(herdr agent start --kind). 예 verify: [\"codex\",\"grok\"] · implement: [\"codex\",\"claude\",\"grok\"](plan 이 kind 를 안 고른 레인에 순서대로 배정하는 풀)",
+          "properties": {
+            "verify": { "type": "array", "items": { "type": "string" } },
+            "implement": { "type": "array", "items": { "type": "string" }, "description": "구현 레인 kind 풀. 기본 [\"claude\"]" },
+            "profiles": { "type": "object", "additionalProperties": { "type": "string" }, "description": "kind 별 '무엇을 맡기나' 한 줄 — plan 이 레인에 kind 를 고를 때 읽는다. 없으면 실행기 기본값(가설). 레인 기록이 쌓이면 여기로 고정한다" }
+          }
         },
+        "lane_placement": { "type": "string", "enum": ["split", "workspace"], "description": "구현 레인 배치 — split(기본): worktree 는 git 이 worktree_dir 에 직접 파고 pane 은 driver 옆에 쪼갠다(새 워크스페이스 없음) · workspace: herdr worktree create 로 레인마다 워크스페이스를 연다" },
+        "worktree_dir": { "type": "string", "description": "split 배치의 worktree 부모 디렉터리(프로젝트 루트 기준 상대 경로 · gitignore 안이어야 한다). 기본 <runtime_dir>/herdr/worktrees/<slug>" },
+        "auto_trust": { "type": "boolean", "description": "codex 기동 직후 '이 디렉터리를 신뢰합니까' 다이얼로그에 자동으로 Yes(레인 cwd 는 언제나 이 프로젝트 자신 또는 그 worktree). false 면 blocked 로 보고하고 사람이 답한다. 기본 true" },
+        "worktree_copy": { "type": "array", "items": { "type": "string" }, "description": "구현 레인 worktree 를 새로 팔 때 메인 체크아웃에서 복사할 gitignore 파일(루트 기준 상대 경로 — 예 .claude/harness.env.local)" },
+        "worktree_init": { "type": "array", "items": { "type": "string" }, "description": "새 worktree 에서 순서대로 돌릴 초기화 셸 명령(예 npm ci). 하나가 실패하면 나머지는 건너뛰고 레인 결과에 남긴다" },
         "kind_args": {
           "type": "object",
           "description": "kind 별 네이티브 인자(`agent start … -- <args>`). 예 codex: [\"--sandbox\",\"danger-full-access\",\"--ask-for-approval\",\"never\"]",

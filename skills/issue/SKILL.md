@@ -46,7 +46,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | recon | 결정 분기점만 찾는 정찰(선택) | Workflow `workflows/recon.js` (sonnet) | grill |
 | grill | 분기점을 **한 번에 하나씩** 묻고 확정 | `/jira-harness:grilling` 을 그 자리에서 따른다 | `issue-set.mjs --decision` · `--stage plan` |
 | plan | dev-guide 초안 + 레인·DoD 설계 → **사용자 승인** | Workflow `workflows/plan.js` → `issue-set.mjs --merge --from plan` → AskUserQuestion | 승인 시 `.draft` 확정 · `wiki-row.mjs` forecast · `--stage implement` |
-| implement | 코드 작성 — 레인 1개면 메인 직접, 2개+면 워크플로 | 직접 / Workflow `workflows/implement.js` | verify |
+| implement | 코드 작성 — 레인 1개면 메인 직접, 2개+면 워크플로. **Herdr 안 + `herdr.lanes` 가 `implement`/`all`** 이면 레인마다 worktree + kind(claude·codex·grok) pane 이 고치고 메인이 패치를 회수·적용한다 | 직접 / Workflow `workflows/implement.js` / `herdr-lanes.mjs implement`([herdr-lanes.md](references/herdr-lanes.md) §implement) | verify |
 | verify | **Codex 판정** → (Codex 가 못 채운 자리에만) 워크플로 ≤4레인 → **메인이 확정/기각** → 기록 | `codex-review.sh` → `workflows/verify.js` → `issue-set.mjs --review` | gate |
 | gate | 커밋 전 경량(컴파일·린트·DoD) / push 전 전량(빌드·테스트·extra) | `gate.mjs --commit` / `gate.mjs --full` | commit / push |
 | commit·push | 평소처럼 `git commit` / `git push` — 훅이 판정 | 훅 (`hooks/hooks.json`) · 무인은 `safe-commit.mjs` | 다음 구현 또는 complete |

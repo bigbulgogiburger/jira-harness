@@ -30,6 +30,9 @@ const hasMemory = A.hasMemory === true;
 const wikiHits = Array.isArray(A.wikiHits) ? A.wikiHits : [];
 const decisions = Array.isArray(A.decisions) ? A.decisions : [];
 const stamp = typeof A.ts === 'string' && A.ts ? A.ts : '(호출자가 ts 를 주지 않음 — 시각 필드는 비운다)';
+// Herdr 구현 레인(herdr.lanes = implement|all)이 켜진 프로젝트만 준다 — 없으면 kind 지시가 프롬프트에 붙지 않는다.
+const herdrKinds = Array.isArray(A.herdrKinds) ? A.herdrKinds.filter((k) => typeof k === 'string' && k) : [];
+const herdrProfiles = isPlainObject(A.herdrProfiles) ? A.herdrProfiles : {};
 
 const keyList = A.keys.join(', ');
 const guideEntries = A.keys.map((k) => `- ${k} → ${A.guidePaths[k] ?? A.guidePaths[A.keys[0]] ?? '(경로 없음)'}`).join('\n');
@@ -121,6 +124,8 @@ const DESIGN_SCHEMA = {
           files: { type: 'array', items: { type: 'string' } },
           worktree: { type: 'boolean' },
           brief: { type: 'string' },
+          kind: { type: 'string' },
+          kind_reason: { type: 'string' },
         },
       },
     },
@@ -276,6 +281,10 @@ const designPrompt = [
   '- `touched`: 이번에 수정/추가할 파일 경로 배열(프로젝트 루트 기준 상대 경로).',
   '- `lanes`: [{name, model, files, worktree, brief}]. name 은 짧은 식별자, model 은 opus/sonnet/haiku 중 난이도에 맞게, files 는 그 레인이 소유하는 경로 glob, worktree 는 두 레인이 같은 파일을 동시에 고칠 때만 true, brief 는 그 레인이 할 일 2~3문장.',
   '  레인은 파일 소유가 겹치지 않게 나눈다. 나눌 근거가 없으면 레인 1개로 둔다(억지로 병렬화하지 않는다).',
+  ...(herdrKinds.length ? [
+    `  **Herdr 구현 레인이 켜져 있다** — 레인마다 \`kind\` 를 ${herdrKinds.join(' / ')} 중 하나로 고르고 \`kind_reason\` 한 줄(왜 그 kind 인가)을 함께 적는다. 레인은 각자 worktree 에서 그 kind 의 에이전트가 돈다(worktree 는 실행기가 항상 판다 — worktree 플래그와 무관). 고르지 않으면 실행기가 풀 순서대로 기계적으로 배정한다.`,
+    `  kind 프로파일(가설 — 레인 기록이 쌓이기 전까지의 기본값. 근거가 얇은 kind 에 핵심 레인을 몰지 않는다): ${herdrKinds.map((k) => `${k} = ${herdrProfiles[k] ?? '(프로파일 없음)'}`).join(' · ')}`,
+  ] : []),
   '- `dod`: [{id, text, probe, cwd, expect, human}]. id 는 D1, D2 …',
   '  probe 는 **실제로 실행 가능한 셸 명령 한 줄**(테스트·린트·빌드 필터). cwd 는 프로젝트 루트 기준 상대 경로(루트면 null).',
   '  expect 는 {pattern, min_tests}. pattern 은 성공 출력에 반드시 나오는 정규식, min_tests 는 실행 건수 하한이다 —',

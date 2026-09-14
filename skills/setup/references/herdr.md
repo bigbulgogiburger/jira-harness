@@ -85,7 +85,7 @@ command = "bigbulgogiburger.jira-harness.report"
 
 ## 4. 레인 실행기(`herdr.lanes`)
 
-Workflow 서브에이전트 대신 **Herdr pane 의 다른 에이전트**(codex·grok·claude …)를 레인으로 쓴다. 기본 `off`. `verify` 면 리뷰 레인(`all` 은 예약). 절차·함정·설정은 [`skills/issue/references/herdr-lanes.md`](../../issue/references/herdr-lanes.md).
+Workflow 서브에이전트 대신 **Herdr pane 의 다른 에이전트**(codex·grok·claude …)를 레인으로 쓴다. 기본 `off`. `verify` 면 리뷰 레인만, `implement` 면 구현 레인(worktree + kind)만, `all` 이면 둘 다. 절차·함정·설정은 [`skills/issue/references/herdr-lanes.md`](../../issue/references/herdr-lanes.md).
 
 역할 세 개가 워크스페이스에 상주한다(A 단계):
 
@@ -93,21 +93,36 @@ Workflow 서브에이전트 대신 **Herdr pane 의 다른 에이전트**(codex�
 |------|--------|------|
 | reviewer | `review.codex_via: "herdr"` | Codex 판정을 `codex exec` 대신 상주 codex pane 으로. 있으면 재사용, 없으면 띄움. 컨텍스트는 `herdr.reviewer_context`(issue/always/never) |
 | runner | 항상(Herdr 안이면) | 게이트를 runner pane 에서 — `herdr-lanes.mjs gate --full [--no-wait]`. 로그가 driver 컨텍스트 밖에 남는다 |
-| lane | `herdr.lanes: "verify"` | 추가 심판(grok 등) 레인 |
+| lane | `herdr.lanes: "verify"` / `"all"` | 추가 심판(grok 등) 리뷰 레인 |
+| implement | `herdr.lanes: "implement"` / `"all"` | 구현 레인 — 레인마다 `lane/<slug>/<name>` worktree 를 파고 kind(plan 이 고른 것, 없으면 `kinds.implement` 풀 순서)로 pane 을 띄운다. 기본 배치 `lane_placement: "split"` 은 worktree 를 `<runtime>/herdr/worktrees/` 에 git 으로 파고 pane 을 **driver 옆에** 쪼갠다(새 워크스페이스 없음 · `"workspace"` 면 `herdr worktree create`). 끝나면 driver 가 diff 를 패치로 회수해 메인에 적용한다. 레인은 커밋하지 않는다 |
 
-driver(Claude) 는 판단·결정·훅만 갖고, 긴 출력은 전부 pane 과 파일로 나간다. codex 는 조언자다 — 커밋은 driver 의 훅·safe-commit 만 통과한다.
+driver(Claude) 는 판단·결정·훅만 갖고, 긴 출력은 전부 pane 과 파일로 나간다. codex·grok 은 조언자이거나 자기 worktree 의 구현자다 — 커밋은 driver 의 훅·safe-commit 만 통과한다.
 
 ```jsonc
 "review": { "codex_via": "herdr" },
 "herdr": {
-  "lanes": "verify",
+  "lanes": "all",                                   // verify | implement | all
   "reviewer_context": "issue",
-  "kinds": { "verify": ["codex", "grok"] },
+  "kinds": {
+    "verify": ["codex", "grok"],
+    "implement": ["codex", "claude", "grok"],       // plan 이 kind 를 안 고른 레인에 순서대로
+    "profiles": {                                    // 선택 — plan 이 kind 를 고를 때 읽는 한 줄(없으면 실행기 기본값 = 가설)
+      "codex": "범위가 닫힌 구현을 테스트 실행과 함께 끝까지",
+      "claude": "여러 파일에 걸친 계약·문맥, 저장소 규약·문서",
+      "grok": "작고 빠른 변경"
+    }
+  },
   "kind_args": { "codex": ["--sandbox", "danger-full-access", "--ask-for-approval", "never"] },
+  "lane_placement": "split",                        // split(기본: pane 을 driver 옆에 · worktree 는 git) | workspace(herdr worktree create)
+  "auto_trust": true,                               // codex "이 디렉터리를 신뢰합니까" 에 자동 Yes(레인 cwd 는 이 프로젝트 자신의 worktree) · false 면 blocked 보고
+  "worktree_copy": [".claude/harness.env.local"],   // 새 worktree 로 복사할 gitignore 파일
+  "worktree_init": [],                              // 새 worktree 에서 돌릴 초기화 명령(예 "npm ci")
   "lane_timeout_s": 900,
   "close_panes": false
 }
 ```
+
+`kinds.profiles` 는 **측정치가 아니라 가설**이다 — 어느 kind 가 어느 일을 잘하는지는 상태 JSON `lanes[].result`(kind·status·tests·seconds)가 쌓여야 말할 수 있다. 근거가 생기기 전까지는 핵심 레인을 근거가 얇은 kind 에 몰지 않는다.
 
 ## 5. 전제 점검(check 에 더할 것)
 

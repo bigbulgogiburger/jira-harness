@@ -67,13 +67,16 @@ test('run: 정상 경로 — split → start(kind_args 기본) → 프롬프트 
   assert.equal(l.nudged, false);
   const c = calls(log);
   const names = c.map(a => `${a[0]} ${a[1]}`);
-  assert.deepEqual(names.slice(0, 5), ['agent list', 'pane split', 'pane rename', 'agent start', 'agent prompt']);
+  assert.deepEqual(names.slice(0, 4), ['agent list', 'pane split', 'pane rename', 'agent start']);
+  // start 와 prompt 사이는 기동 다이얼로그 사다리·생존 확인(agent get / agent read)뿐 — 다이얼로그가 없으니 send-keys 는 없다
+  const between = names.slice(4, names.indexOf('agent prompt'));
+  assert.ok(between.length > 0 && between.every(n => n === 'agent get' || n === 'agent read'), `start→prompt 사이: ${between.join(', ')}`);
   const split = c[1];
   assert.ok(split.includes('--pane') && split.includes('w1:p1') && split.includes('--no-focus') && split.includes('--cwd'));
   const start = c[3];
   assert.deepEqual(start.slice(0, 7), ['agent', 'start', 'a', '--kind', 'codex', '--pane', 'w1:p9']);
   if (process.platform === 'win32') assert.ok(start.includes('--sandbox') && start.includes('danger-full-access'), 'Windows codex 샌드박스 해제 기본값');
-  const prompt = c[4];
+  const prompt = c.find(a => a[0] === 'agent' && a[1] === 'prompt');
   assert.match(prompt[3], /^Read the file .*a\.json\.prompt\.md and do exactly/);
   const pf = readFileSync(`${out}.prompt.md`, 'utf8');
   assert.match(pf, /리뷰해라/);
@@ -87,7 +90,8 @@ test('run: 제출이 안 된 형태(idle 유지 + 화면에 프롬프트 잔존)
   const dir = makeRepo();
   const out = join(dir, 'b.json');
   writeFileSync(out, JSON.stringify({ findings: [], summary: 'ok' }));
-  const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'idle,idle,idle,working,done', FAKE_HERDR_READ: '> Read the file …prompt.md and do exactly what it says' });
+  // get 순서: 사다리 1 · 제출 전 생존 확인 1 · 제출 뒤 폴링(3번째에서 nudge) — 그 뒤 working
+  const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'idle,idle,idle,idle,idle,working,done', FAKE_HERDR_READ: '> Read the file …prompt.md and do exactly what it says' });
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'b', kind: 'grok', prompt: 'x', out }], { close_panes: true })], env);
   const l = r.value.lanes[0];
   assert.equal(l.status, 'done', JSON.stringify(l));
@@ -101,7 +105,8 @@ test('run: blocked — teach 다이얼로그면 esc 1회 후 계속, 그 외 승
   const teach = makeRepo();
   const out1 = join(teach, 't.json');
   writeFileSync(out1, JSON.stringify({ findings: [] }));
-  const a = inside(teach, { FAKE_HERDR_STATES: 'working,blocked,done', FAKE_HERDR_READ: 'Teach auto mode about your environment? (y/n)' });
+  // get 순서: 사다리 1 · 생존 확인 1 · 폴링 1(working) → wait 가 blocked(teach) → esc → wait 가 done
+  const a = inside(teach, { FAKE_HERDR_STATES: 'working,working,working,blocked,done', FAKE_HERDR_READ: 'Teach auto mode about your environment? (y/n)' });
   const r1 = lanes(teach, ['run', '--spec', spec(teach, [{ name: 't', kind: 'claude', prompt: 'x', out: out1 }])], a.env);
   assert.equal(r1.value.lanes[0].status, 'done', JSON.stringify(r1.value.lanes[0]));
   assert.equal(r1.value.lanes[0].escaped, true);
@@ -113,6 +118,42 @@ test('run: blocked — teach 다이얼로그면 esc 1회 후 계속, 그 외 승
   assert.equal(r2.value.lanes[0].status, 'blocked');
   assert.match(r2.value.lanes[0].screen_tail, /Allow Bash/);
   assert.ok(!calls(b.log).some(c => c[1] === 'send-keys'), '승인 UI 에 키를 보내지 않는다');
+});
+
+test('run: 기동 직후 다이얼로그 사다리 — 업데이트 안내는 Skip, 디렉터리 신뢰는 enter, 그 뒤에야 프롬프트 · auto_trust:false 면 blocked(프롬프트 없음) · 에이전트가 사라졌으면 아무 입력도 보내지 않고 failed', () => {
+  const TRUST = '  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk\n› 1. Yes, continue\n  2. No, quit\n  Press enter to continue';
+  // (a) update → trust → 정상
+  const dir = makeRepo();
+  const out = join(dir, 'd.json');
+  writeFileSync(out, JSON.stringify({ findings: [], summary: 'ok' }));
+  const a = inside(dir, { FAKE_HERDR_STATES: 'idle,idle,working,done', FAKE_HERDR_READ_SEQ: JSON.stringify(['  1. Update now\n  2. Skip', TRUST, '']) });
+  const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'd', kind: 'codex', prompt: 'x', out }])], a.env);
+  const l = r.value.lanes[0];
+  assert.equal(l.status, 'done', JSON.stringify(l));
+  assert.deepEqual(l.dialogs, ['update', 'trust']);
+  const c = calls(a.log);
+  const keys = c.filter(x => x[0] === 'agent' && x[1] === 'send-keys').map(x => x.slice(3).join('+'));
+  assert.deepEqual(keys, ['down+enter', 'enter']);
+  const lastKey = c.map((x, i) => (x[0] === 'agent' && x[1] === 'send-keys' ? i : -1)).filter(i => i >= 0).pop();
+  const promptAt = c.findIndex(x => x[0] === 'agent' && x[1] === 'prompt');
+  assert.ok(lastKey < promptAt, '다이얼로그를 다 걷은 뒤에 프롬프트');
+  // (b) auto_trust:false → blocked · 프롬프트 없음
+  const d2 = makeRepo();
+  const b = inside(d2, { FAKE_HERDR_STATES: 'idle', FAKE_HERDR_READ: TRUST });
+  const r2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'e', kind: 'codex', prompt: 'x', out: join(d2, 'e.json') }], { auto_trust: false })], b.env);
+  assert.equal(r2.value.lanes[0].status, 'blocked');
+  assert.match(r2.value.lanes[0].reason, /auto_trust=false/);
+  assert.ok(!calls(b.log).some(x => x[1] === 'prompt' || x[1] === 'send-keys'), '입력을 보내지 않는다');
+  // (c) 에이전트 소실(agent get 실패) → failed · 프롬프트·send-keys 0 · pane 화면 꼬리
+  const d3 = makeRepo();
+  const g3 = inside(d3, { FAKE_HERDR_GET_FAIL: '1', FAKE_HERDR_READ: 'PS C:\\> ' });
+  const r3 = lanes(d3, ['run', '--spec', spec(d3, [{ name: 'f', kind: 'codex', prompt: 'x', out: join(d3, 'f.json') }])], g3.env);
+  assert.equal(r3.value.lanes[0].status, 'failed');
+  assert.match(r3.value.lanes[0].reason, /종료됐다/);
+  assert.equal(r3.value.lanes[0].pane, 'w1:p9');
+  const c3 = calls(g3.log);
+  assert.ok(!c3.some(x => x[1] === 'prompt' || x[1] === 'send-keys'), '죽은 pane 에 입력을 보내지 않는다');
+  assert.ok(c3.some(x => x[0] === 'pane' && x[1] === 'read'), '진단은 pane 화면으로');
 });
 
 test('run: 결과 파일이 없으면 failed(사유에 경로) · .error.txt 가 있으면 그 내용 · start 실패도 failed', () => {

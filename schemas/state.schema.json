@@ -27,7 +27,12 @@
           "model": { "type": "string" },
           "files": { "type": "array", "items": { "type": "string" } },
           "worktree": { "type": "boolean" },
-          "result": { "type": ["object", "null"] }
+          "brief": { "type": "string", "description": "그 레인이 할 일 2~3문장(plan 이 쓴다)" },
+          "kind": { "type": "string", "description": "Herdr 구현 레인의 에이전트 kind(claude·codex·grok …). plan 이 고르거나 실행기가 풀에서 배정한다" },
+          "kind_reason": { "type": "string", "description": "왜 그 kind 인가 한 줄(plan)" },
+          "kind_source": { "type": "string", "enum": ["plan", "pool"], "description": "kind 를 누가 정했나 — 실행기가 기록" },
+          "dod": { "type": "array", "items": {} },
+          "result": { "type": ["object", "null"], "description": "레인 결과 — implement.js 사이드카 또는 herdr-lanes.mjs implement 가 쓴다({status, tests, files, notes, patch?, applied?, seconds?})" }
         }
       }
     },

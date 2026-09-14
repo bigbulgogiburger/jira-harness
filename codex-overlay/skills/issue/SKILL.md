@@ -49,7 +49,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | recon | 결정 분기점만 찾는 정찰(선택) | Workflow `workflows/recon.js` (sonnet) | grill |
 | grill | 분기점을 **한 번에 하나씩** 묻고 확정 | `jira-harness 플러그인의 grilling 스킬` 을 그 자리에서 따른다 | `issue-set.mjs --decision` · `--stage plan` |
 | plan | dev-guide 초안 + 레인·DoD 설계 → **사용자 승인** | Workflow `workflows/plan.js` → `issue-set.mjs --merge --from plan` → request_user_input | 승인 시 `.draft` 확정 · `wiki-row.mjs` forecast · `--stage implement` |
-| implement | 코드 작성 — 레인 1개면 메인 직접, 2개+면 워크플로 | 직접 / Workflow `workflows/implement.js` | verify |
+| implement | 코드 작성 — 레인 1개면 메인 직접. 2개+ 는 **Herdr 안 + `herdr.lanes` 가 `implement`/`all`** 이면 레인마다 worktree + kind(claude·codex·grok) pane 이 고치고 메인이 패치를 회수·적용, Herdr 밖이면 메인이 순차 구현 | 직접 / `herdr-lanes.mjs implement`([herdr-lanes.md](references/herdr-lanes.md) §implement) | verify |
 | verify | **Codex 판정** → (Codex 가 못 채운 자리에만) 워크플로 ≤4레인 → **메인이 확정/기각** → 기록 | `codex-review.sh` → `scripts/lanes-codex.mjs verify --json` → `issue-set.mjs --review` | gate |
 | gate | 커밋 전 경량(컴파일·린트·DoD) / push 전 전량(빌드·테스트·extra) | `gate.mjs --commit` / `gate.mjs --full` | commit / push |
 | commit·push | 평소처럼 `git commit` / `git push` — 훅이 판정 | 훅 (`hooks/hooks.json`) · 무인은 `safe-commit.mjs` | 다음 구현 또는 complete |
@@ -75,7 +75,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 ## 4. 변형
 
 - **`--unattended`(무인)**: request_user_input 을 부르지 않고 권장안을 택한다(결정·승인에 `(unattended)` 표기). 사람 게이트(human DoD·머지)에 닿으면 멈추고 보고. 커밋은 `node "<P>/scripts/safe-commit.mjs" -m "<메시지>" [--push]` — 훅과 같은 판정을 스크립트가 하고 통과할 때만 커밋한다(훅이 발화하지 않는 헤드리스 경로에서도 같은 규율).
-- **Codex 실행 경로**: verify 레인은 `scripts/lanes-codex.mjs`를 사용한다. 개별 역할 위임은 `subagents/<name>.toml`의 `developer_instructions`를 읽어 `spawn_agent` 프롬프트에 넣는다. Claude 에이전트 이름이나 모델 티어를 Codex 호출 인자로 넘기지 않는다. recon/plan/implement의 저장 워크플로는 아직 이식되지 않았다. 해당 자동 실행을 요청받으면 미지원으로 보고하고 수동 진행 범위를 확인한다.
+- **Codex 실행 경로**: verify 레인은 `scripts/lanes-codex.mjs`를 사용한다. 개별 역할 위임은 `subagents/<name>.toml`의 `developer_instructions`를 읽어 `spawn_agent` 프롬프트에 넣는다. Claude 에이전트 이름이나 모델 티어를 Codex 호출 인자로 넘기지 않는다. recon/plan 의 저장 워크플로는 아직 이식되지 않았다 — 해당 자동 실행을 요청받으면 미지원으로 보고하고 수동 진행 범위를 확인한다. **implement 는 이식됐다**: Herdr 안이고 `herdr.lanes` 가 `implement`/`all` 이면 `scripts/herdr-lanes.mjs implement` 가 레인마다 worktree + kind pane 을 띄우고 패치를 회수한다(Node 스크립트라 Codex 에서도 그대로 돈다). Herdr 밖이면 메인이 레인을 순차로 직접 구현한다.
 - **다중 키** `ABC-696,ABC-940`: 브랜치 `feat/ABC-696-940` 하나, dev-guide 한 장, 상태 JSON 하나. Jira 콜은 키마다.
 - **worktree**: 어느 worktree 에서 실행해도 상태·로그는 메인 저장소의 runtime 에 쓰인다 — 같은 브랜치의 게이트 기록을 worktree 와 메인이 공유한다.
 - `harness.json` 의 게이트 명령이 틀렸으면 이 스킬에서 고치지 않는다 — `jira-harness 플러그인의 setup 스킬` 의 일이다.

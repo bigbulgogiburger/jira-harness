@@ -94,6 +94,23 @@ test('plan (a) 정상 args — 레인 6개·phase 순서·model 전부 명시·�
   assert.ok(r.understand.requirements && 'requirements' in r.understand.requirements);
 });
 
+test('plan (e) herdrKinds 가 오면 Design 프롬프트에 kind 선택 지시·프로파일이 붙고, 없으면 붙지 않는다', () => {
+  const base = sim(WF('plan.js'), PLAN_ARGS, RESP('plan-design-ok.json'));
+  const withKinds = sim(WF('plan.js'), planArgs({ herdrKinds: ['codex', 'claude', 'grok'], herdrProfiles: { codex: '닫힌 구현', grok: '작은 변경' } }), RESP('plan-design-ok.json'));
+  assert.equal(withKinds.error, null, withKinds.error ?? '');
+  const d0 = base.calls.find((c) => c.label === 'design').promptChars;
+  const d1 = withKinds.calls.find((c) => c.label === 'design').promptChars;
+  assert.ok(d1 > d0 + 150, `kind 지시가 Design 프롬프트에 붙지 않았다(${d0} → ${d1})`);
+  assert.equal(withKinds.result.verdict, 'PASS');
+  // 다른 레인의 프롬프트는 그대로다 — kind 는 Design 만의 관심사
+  for (const label of ['understand:code', 'verify:scope']) {
+    assert.equal(withKinds.calls.find((c) => c.label === label).promptChars, base.calls.find((c) => c.label === label).promptChars, label);
+  }
+  // 빈 배열·문자열 아님 은 "없음" 과 같다
+  const empty = sim(WF('plan.js'), planArgs({ herdrKinds: [] }), RESP('plan-design-ok.json'));
+  assert.equal(empty.calls.find((c) => c.label === 'design').promptChars, d0);
+});
+
 test('plan meta 는 선언 phase 와 실제 phase() 가 일치한다', () => {
   const meta = readMeta(WF('plan.js'));
   assert.equal(meta.name, 'jira-harness-plan');
