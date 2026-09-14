@@ -1,6 +1,6 @@
 {
   "name": "jira-harness",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "Jira-driven development harness for Codex: issue skills, review lanes, commit/push gate hooks, and bookkeeping scripts.",
   "author": {
     "name": "bigbulgogiburger"
