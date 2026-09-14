@@ -70,7 +70,9 @@ export function laneName(s) { const n = String(s).toLowerCase().replace(/[^a-z0-
 /** kind 별 기본 네이티브 인자 — 실측 함정을 기본값으로 박는다. harness.json.herdr.kind_args 가 덮어쓴다 */
 export const DEFAULT_KIND_ARGS = {
   codex: process.platform === 'win32' ? ['--sandbox', 'danger-full-access', '--ask-for-approval', 'never'] : ['--ask-for-approval', 'never'],
-  claude: ['--permission-mode', 'acceptEdits'],
+  // claude: acceptEdits 는 worktree 밖(런타임 디렉토리의 프롬프트 파일) 읽기와 Bash(테스트 실행)마다 승인 UI 를 띄워 레인이 멈춘다
+  //   (2026-09-14 실측 — 두 레인이 "Do you want to proceed?" 에서 30분 대기). 레인은 격리 worktree 에서만 일하고 커밋하지 않으므로 bypassPermissions.
+  claude: ['--permission-mode', 'bypassPermissions'],
   grok: [],
 };
 /**
@@ -84,6 +86,9 @@ export const DEFAULT_KIND_PROFILES = {
   grok: '작고 빠른 변경, 탐색적 시도(근거 가장 얇음 — 레인 기록으로 채운다)',
 };
 const TEACH_DIALOG = /teach auto mode|teach .* about your environment/i;
+// claude 기동 직후 프로젝트 .mcp.json 이 있으면 "MCP servers … Do you want to use them?" — enter(기본 Yes). 이 위에 프롬프트를 보내면 글자만 남고 제출되지 않는다(2026-09-14 실측).
+const MCP_DIALOG = /mcp server|use these mcp|\.mcp\.json/i;
+const INPUT_READY = /❯|>\s*$/m;
 const UPDATE_DIALOG = /update now|skip/i;
 // codex 기동 직후 "Do you trust the contents of this directory?" — 새 worktree 마다 뜬다(신뢰는 저장소 루트 단위인데 임시·새 저장소면 루트도 미신뢰).
 // ★이 상태에서 프롬프트를 보내면 글자가 선택키로 먹혀 codex 가 quit 하고, 남은 텍스트가 **셸에서 실행된다**(2026-09-14 실측). 그래서 프롬프트 전에 반드시 걷는다.
@@ -118,16 +123,18 @@ function paneTail(pane, env, lines = 15) {
  */
 async function settleStartupDialogs(name, env, { autoTrust = true } = {}) {
   const seen = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 12; i++) {
     const state = agentState(name, env);
     if (state == null) return { seen, gone: true };
     if (state === 'working') break;
     const s = screen(name, env, 25);
-    if (TRUST_DIALOG.test(s)) {
+    if (MCP_DIALOG.test(s) && /do you want|use them|1\. yes/i.test(s)) { herdr(['agent', 'send-keys', name, 'enter'], { cwd, env }); seen.push('mcp'); }
+    else if (TRUST_DIALOG.test(s)) {
       if (!autoTrust) return { seen, blocked: 'trust', screen: s };
       herdr(['agent', 'send-keys', name, 'enter'], { cwd, env }); seen.push('trust');
     } else if (/update now/i.test(s) && UPDATE_DIALOG.test(s)) { herdr(['agent', 'send-keys', name, 'down', 'enter'], { cwd, env }); seen.push('update'); }
     else if (TEACH_DIALOG.test(s)) { herdr(['agent', 'send-keys', name, 'esc'], { cwd, env }); seen.push('teach'); }
+    else if (!INPUT_READY.test(s) && i < 8) { await sleep(2000); continue; } // 아직 UI 가 안 그려졌다 — 빈 화면을 "다이얼로그 없음" 으로 읽지 않는다
     else break;
     await sleep(2000);
   }
