@@ -187,13 +187,15 @@ test('implement(split): 레인 2개를 git worktree + driver 옆 pane 으로 띄
   assert.equal(ledger.lanes.be.applied, 'yes'); assert.equal(ledger.lanes.fe.branch, `lane/${SLUG}/fe`); assert.equal(ledger.lanes.be.placement, 'split');
   assert.match(readFileSync(join(dir, '.claude/runtime/herdr/patches', `${SLUG}.lane-be.patch`), 'utf8'), /\+class Fee \{\}/);
   assert.ok(existsSync(join(dir, '.claude/runtime/issues', `${SLUG}.lane-be.json.prompt.md`)), '프롬프트는 파일로');
-  // herdr 호출 — pane split 2(driver 옆 · --cwd worktree) · worktree 명령 0 · start 2(kind 순서) · 전부 띄운 뒤 wait · 완료 토스트
+  // herdr 호출 — pane split 2(driver 옆 격자 · --cwd worktree) · worktree 명령 0 · start 2(kind 순서) · 전부 띄운 뒤 wait · 완료 토스트
   const c = calls(log);
   const names = c.map(a => `${a[0]} ${a[1]}`);
   assert.equal(names.filter(n => n === 'pane split').length, 2);
   assert.ok(!names.some(n => n.startsWith('worktree ')), 'split 배치는 Herdr worktree 명령을 쓰지 않는다(새 워크스페이스 없음)');
   const splits = c.filter(a => a[0] === 'pane' && a[1] === 'split');
-  for (const s of splits) { assert.ok(s.includes('--pane') && s.includes('w1:p1') && s.includes('--no-focus'), 'driver pane 옆'); }
+  // 격자: 1번 레인은 driver(w1:p1) 오른쪽, 2번 레인은 1번 pane(fake 는 w1:p9) 아래 — 세로 한 줄이 아니라 2행(2026-09-14 오너 지시)
+  assert.deepEqual(splits.map(s => [s[s.indexOf('--pane') + 1], s[s.indexOf('--direction') + 1]]), [['w1:p1', 'right'], ['w1:p9', 'down']], '격자 배치');
+  for (const s of splits) assert.ok(s.includes('--no-focus'), '초점은 driver 에 남는다');
   assert.deepEqual(splits.map(s => fwd(s[s.indexOf('--cwd') + 1])), [fwd(be), fwd(fe)]);
   assert.equal(names.filter(n => n === 'agent start').length, 2);
   assert.equal(names.filter(n => n === 'agent wait').length, 2);

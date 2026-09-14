@@ -13,7 +13,7 @@
 //   lane       임의 spec(run --spec) — 리뷰 밖 용도.
 //   implement  상태 JSON 의 레인 선언(plan 이 만든 lanes[])을 레인마다 **worktree + kind** 로 띄우고, 끝나면 worktree 의 변경을 패치로 회수해
 //              메인 체크아웃에 적용한다(`git apply --3way`). 레인은 커밋하지 않는다 — 커밋 권한은 언제나 메인(훅·게이트)이다.
-//              배치(herdr.lane_placement) — split(기본): worktree 는 git 이 <runtime>/herdr/worktrees/<slug>/<lane> 에 파고 pane 은 driver **옆에** 쪼갠다(새 워크스페이스 없음)
+//              배치(herdr.lane_placement) — split(기본): worktree 는 git 이 <runtime>/herdr/worktrees/<slug>/<lane> 에 파고 pane 은 driver **옆 2행 격자**에 쪼갠다(1번 right · 2번 그 아래 · 이후 행 번갈아 right — 새 워크스페이스 없음)
 //                                          workspace: `herdr worktree create` 로 레인마다 워크스페이스를 연다
 //   ★기동 직후 다이얼로그(codex "Do you trust the contents of this directory?" · 업데이트 안내 · claude teach)는 프롬프트 **전에** 걷는다.
 //     그 상태에서 프롬프트를 보내면 글자가 선택키로 먹혀 에이전트가 quit 하고 남은 텍스트가 셸에서 실행된다(2026-09-14 실측). 에이전트가 사라졌으면 절대 입력을 보내지 않는다.
@@ -226,11 +226,39 @@ function localWorktree(branch, repoDir) {
   }
   return null;
 }
+
+// ---------------------------------------------------------------- 레인 pane 격자 배치
+// 레인 pane 을 driver 오른쪽 한 줄로만 쪼개지 않는다(오너 지시 2026-09-14 — "세로로만 만들지 말고 밑에도 배치").
+// 규칙: 1번 레인 = driver 오른쪽(row0) · 2번 = 그 아래(row1) · 그 뒤로는 row0/row1 을 번갈아 **그 행의 마지막 pane 오른쪽**.
+// driver 열은 세로 전체를 유지하고 레인들은 오른쪽에 2행 격자로 쌓인다. 상태는 한 프로세스(run/implement/verify 한 번) 안에서만 산다.
+const laneGrid = { rows: [[], []], n: 0 };
+export function resetLaneGrid() { laneGrid.rows = [[], []]; laneGrid.n = 0; }
+function laneSplitSlot(h) {
+  const i = laneGrid.n++;
+  const driver = h.pane ? ['--pane', h.pane] : ['--current'];
+  if (i === 0) return { anchor: driver, direction: 'right', row: 0 };
+  const row0 = laneGrid.rows[0];
+  if (i === 1 && row0.length) return { anchor: ['--pane', row0[row0.length - 1]], direction: 'down', row: 1 };
+  const row = i % 2;
+  const last = laneGrid.rows[row][laneGrid.rows[row].length - 1];
+  if (!last) return { anchor: driver, direction: row === 1 ? 'down' : 'right', row }; // 앞 레인이 pane 을 못 만든 경우 — driver 기준으로 복귀
+  return { anchor: ['--pane', last], direction: 'right', row };
+}
+/** 격자 규칙대로 pane 을 하나 쪼개고 자리를 기록한다 — {pane, workspace, direction} | {error} */
+function splitLanePane(h, path, env) {
+  const slot = laneSplitSlot(h);
+  const r = herdr(['pane', 'split', ...slot.anchor, '--direction', slot.direction, '--cwd', path, '--no-focus'], { cwd, env, timeout: 15000 });
+  if (!r.ok) return { error: `pane split 실패: ${r.reason}` };
+  const pane = r.value?.result?.pane?.pane_id ?? null;
+  if (!pane) return { error: 'pane id 를 응답에서 못 읽음' };
+  laneGrid.rows[slot.row].push(pane);
+  return { pane, workspace: r.value?.result?.pane?.workspace_id ?? null, direction: slot.direction };
+}
 /**
- * split 배치(기본) — worktree 는 git 이 `<worktree_dir>/<lane>` 에 직접 파고, pane 은 **지금 워크스페이스의 driver 옆**에 쪼갠다(새 워크스페이스를 열지 않는다).
+ * split 배치(기본) — worktree 는 git 이 `<worktree_dir>/<lane>` 에 직접 파고, pane 은 **지금 워크스페이스의 driver 옆 격자**에 쪼갠다(새 워크스페이스를 열지 않는다 · 자리는 splitLanePane).
  * 순서: ① 브랜치 체크아웃이 이미 있으면 그 경로(existing · fresh 면 `git worktree remove --force` 뒤 새로) ② 낡은 브랜치는 지우고 ③ `git worktree add -b` ④ pane split --cwd <경로>.
  */
-function acquireLocalWorktree(lane, repoDir, env, { fresh = false, prep = null, dir, anchor }) {
+function acquireLocalWorktree(lane, repoDir, env, { fresh = false, prep = null, dir }) {
   const branch = lane.worktree_branch;
   let existing = localWorktree(branch, repoDir);
   if (existing && fresh) {
@@ -252,11 +280,9 @@ function acquireLocalWorktree(lane, repoDir, env, { fresh = false, prep = null, 
     mode = 'created';
     prepared = prep ? prepareWorktree(path, { repoDir, env, ...prep }) : null;
   }
-  const r = herdr(['pane', 'split', ...anchor, '--direction', 'right', '--cwd', path, '--no-focus'], { cwd, env, timeout: 15000 });
-  if (!r.ok) return { error: `pane split 실패: ${r.reason}` };
-  const pane = r.value?.result?.pane?.pane_id ?? null;
-  if (!pane) return { error: 'pane id 를 응답에서 못 읽음' };
-  return { pane, path, workspace: r.value?.result?.pane?.workspace_id ?? null, mode, prepared, dropped_stale: droppedStale, placement: 'split' };
+  const s = splitLanePane(herdrEnv(env), path, env);
+  if (s.error) return { error: s.error };
+  return { pane: s.pane, path, workspace: s.workspace, mode, prepared, dropped_stale: droppedStale, placement: 'split', direction: s.direction };
 }
 
 // ---------------------------------------------------------------- lane
@@ -296,18 +322,16 @@ export async function startLane(lane, { env = process.env, kindArgs = {}, laneCw
   }
   if (!pane) {
     if (lane.worktree_branch) {
-      const anchor = h.pane ? ['--pane', h.pane] : ['--current'];
       const w = lane.placement === 'workspace'
         ? acquireWorktree(lane, workDir, env, { fresh, prep })
-        : acquireLocalWorktree(lane, workDir, env, { fresh, prep, dir: lane.worktree_dir ?? '.herdr-lanes', anchor });
+        : acquireLocalWorktree(lane, workDir, env, { fresh, prep, dir: lane.worktree_dir ?? '.herdr-lanes' });
       if (w.error) return finish({ reason: w.error });
       pane = w.pane;
       res.worktree = { branch: lane.worktree_branch, path: w.path, workspace: w.workspace, mode: w.mode, placement: w.placement, ...(w.prepared ? { prepared: w.prepared } : {}), ...(w.dropped_stale ? { dropped_stale: true } : {}) };
     } else {
-      const anchor = h.pane ? ['--pane', h.pane] : ['--current'];
-      const r = herdr(['pane', 'split', ...anchor, '--direction', 'right', '--cwd', workDir, '--no-focus'], { cwd, env, timeout: 15000 });
-      if (!r.ok) return finish({ reason: `pane split 실패: ${r.reason}` });
-      pane = r.value?.result?.pane?.pane_id ?? null;
+      const s = splitLanePane(h, workDir, env);
+      if (s.error) return finish({ reason: s.error });
+      pane = s.pane; res.split = s.direction;
     }
     if (!pane) return finish({ reason: 'pane id 를 응답에서 못 읽음' });
     res.pane = pane;
