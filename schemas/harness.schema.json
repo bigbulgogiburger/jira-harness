@@ -86,6 +86,8 @@
           "type": "integer",
           "minimum": 60
         },
+        "codex_model": { "type": "string", "description": "Codex 판정 모델 — codex --model 로 넘긴다(예 gpt-6-sol). 생략하면 codex 기본값(~/.codex/config.toml 의 model). exec·herdr 두 경로와 Codex 판 리뷰 레인(lanes-codex) 공통 — herdr 상주 reviewer 는 새로 띄울 때만 적용된다" },
+        "codex_effort": { "type": "string", "description": "Codex 판정 reasoning effort — codex -c model_reasoning_effort=<값>(예 xhigh). 생략하면 codex 기본값. 모델이 거부하는 값이면 codex 가 오류로 끝나 status=fail 로 드러난다" },
         "lanes_max": {
           "type": "integer",
           "minimum": 1,

@@ -110,6 +110,7 @@ const deltaSince = arg('--delta-since');
 const lanesMax = Number(arg('--lanes-max') || cfg?.review?.lanes_max || 4) || 4;
 const sandbox = arg('--sandbox') || cfg?.review?.codex_sandbox || 'read-only';
 const model = arg('--model') || cfg?.review?.codex_model || null;
+const effort = arg('--effort') || cfg?.review?.codex_effort || null;
 const axes = String(arg('--axes') || '').split(',').map((s) => s.trim()).filter(Boolean);
 const dispatch = cfg.dispatch && typeof cfg.dispatch === 'object' ? cfg.dispatch : {};
 
@@ -227,6 +228,7 @@ function runLane(lane, i) {
       '--output-last-message', outPath,
     ];
     if (model) args.push('--model', model);
+    if (effort) args.push('-c', `model_reasoning_effort=${effort}`);
     args.push(readFileSync(promptPath, 'utf8'));
 
     const started = Date.now();

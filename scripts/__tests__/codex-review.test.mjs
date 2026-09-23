@@ -1,5 +1,5 @@
 // codex-review.test.mjs — scripts/codex-review.sh 통합 테스트.
-// 임시 git 저장소 + PATH 맨 앞에 가짜 `codex` 실행 파일을 두고, FAKE_CODEX_MODE 로 4가지 시나리오를 재현한다.
+// 임시 git 저장소 + PATH 맨 앞에 가짜 `codex` 실행 파일을 두고, FAKE_CODEX_MODE 로 시나리오를 재현한다.
 // win32 이면 Git Bash 를 직접 호출한다(bash.exe 를 spawnSync 의 실행 파일로 — PATH lookup 이 필요 없다).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,11 +50,18 @@ case "\${FAKE_CODEX_MODE:-2}" in
     echo "Verdict: PASS"
     exit 0
     ;;
+  6)
+    # 프롬프트(마지막 인자)를 뺀 argv 를 한 줄에 하나씩 — 모델·effort 전달 검사용
+    n=$(($# - 1)); i=0
+    for a in "$@"; do i=$((i + 1)); [ "$i" -gt "$n" ] && break; printf '%s\\n' "$a"; done > "$FAKE_CODEX_ARGS_OUT"
+    echo "Verdict: PASS"
+    exit 0
+    ;;
 esac
 `;
 
 /** 임시 git 저장소: main 에 a.txt 커밋 → feat/ABC-1 브랜치 → a.txt 수정 커밋(=sinceTree 지점) → b.txt 스테이징(미커밋). */
-function makeRepo() {
+function makeRepo(extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jh-codex-'));
   g(dir, 'init', '-q', '-b', 'main');
   g(dir, 'config', 'user.email', 'test@example.com');
@@ -66,6 +73,7 @@ function makeRepo() {
     branch_pattern: '^(feat|fix)/(?<keys>ABC-\\d+(?:-\\d+)*)(?:-[a-z0-9]+)*$',
     default_branch: 'main', runtime_dir: '.claude/rt',
     stacks: {},
+    ...extra,
   }, null, 2) + '\n');
   writeFileSync(join(dir, 'a.txt'), 'hello\n');
   g(dir, 'add', '-A');
@@ -207,4 +215,38 @@ test('runtime_dir 는 harness.json 값을 따른다(기본 .claude/runtime 이 �
   const bin = makeFixtureBin();
   const r = run(dir, [], { PATH: pathWithFixture(bin), FAKE_CODEX_MODE: '2' });
   assert.match(r.result.out.replace(/\\/g, '/'), /\/\.claude\/rt\/review\//);
+});
+
+/** 가짜 codex 가 받은 argv(프롬프트 제외)를 한 줄 문자열로 */
+function codexArgv(dir, args = []) {
+  const bin = makeFixtureBin();
+  const argsOut = join(dir, 'argv6.txt');
+  const r = run(dir, args, { PATH: pathWithFixture(bin), FAKE_CODEX_MODE: '6', FAKE_CODEX_ARGS_OUT: argsOut });
+  assert.equal(r.result.status, 'ok', JSON.stringify(r.result));
+  return { r, argv: readFileSync(argsOut, 'utf8').trim().split(/\r?\n/).join(' ') };
+}
+
+test('review.codex_model·codex_effort 는 harness.json 에서 읽어 --model · -c model_reasoning_effort 로 넘기고 보고서 머리에 남긴다', () => {
+  const { dir } = makeRepo({ review: { codex: true, codex_model: 'gpt-6-sol', codex_effort: 'xhigh' } });
+  const { r, argv } = codexArgv(dir);
+  assert.match(argv, /--model gpt-6-sol/);
+  assert.match(argv, /-c model_reasoning_effort=xhigh/);
+  const report = readFileSync(r.result.out, 'utf8');
+  assert.match(report, /- model: gpt-6-sol/);
+  assert.match(report, /- effort: xhigh/);
+});
+
+test('--model · --effort 인자가 harness.json 값보다 우선한다', () => {
+  const { dir } = makeRepo({ review: { codex_model: 'gpt-6-sol', codex_effort: 'xhigh' } });
+  const { argv } = codexArgv(dir, ['--model', 'm-override', '--effort', 'low']);
+  assert.match(argv, /--model m-override/);
+  assert.match(argv, /-c model_reasoning_effort=low/);
+  assert.doesNotMatch(argv, /gpt-6-sol|xhigh/);
+});
+
+test('모델·effort 미설정이면 --model · -c 를 넘기지 않는다(codex 기본값)', () => {
+  const { dir } = makeRepo();
+  const { r, argv } = codexArgv(dir);
+  assert.doesNotMatch(argv, /--model|model_reasoning_effort/);
+  assert.match(readFileSync(r.result.out, 'utf8'), /- model: \(default\)\n- effort: \(default\)/);
 });

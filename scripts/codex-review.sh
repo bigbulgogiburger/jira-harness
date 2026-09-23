@@ -17,7 +17,13 @@
 #
 # 사용법:
 #   scripts/codex-review.sh [--since <tree-id>] [--out <file>] [--cwd <dir>]
-#                            [--timeout <sec>] [--model <codex model>] [--prompt-file <file>]
+#                            [--timeout <sec>] [--model <codex model>] [--effort <level>]
+#                            [--prompt-file <file>]
+#
+#   모델·effort: 인자(--model/--effort) > harness.json review.codex_model·review.codex_effort
+#     > codex 기본값(~/.codex/config.toml 의 model·model_reasoning_effort).
+#     effort 는 codex 에 -c model_reasoning_effort=<값> 으로 넘긴다 — 모델이 거부하는 값이면
+#     codex 가 오류로 끝나 status=fail 로 드러난다(조용히 기본값으로 떨어지지 않는다).
 #
 #   대상 diff:
 #     기본        git diff <default_branch>...HEAD (커밋 구간) + git diff HEAD (작업트리)
@@ -47,6 +53,7 @@ OUT_ARG=""
 CWD_ARG=""
 TIMEOUT_ARG=""
 MODEL=""
+EFFORT=""
 PROMPT_FILE_ARG=""
 
 while [[ $# -gt 0 ]]; do
@@ -56,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --cwd) CWD_ARG="${2:?--cwd 는 디렉터리 필요}"; shift 2 ;;
     --timeout) TIMEOUT_ARG="${2:?--timeout 은 초 필요}"; shift 2 ;;
     --model) MODEL="${2:?--model 은 모델명 필요}"; shift 2 ;;
+    --effort) EFFORT="${2:?--effort 는 reasoning effort 값 필요}"; shift 2 ;;
     --prompt-file) PROMPT_FILE_ARG="${2:?--prompt-file 은 파일 경로 필요}"; shift 2 ;;
     *) echo "[codex-review] 알 수 없는 인자: $1" >&2; exit 1 ;;
   esac
@@ -123,6 +131,8 @@ harness_field() { # field default
 
 DEFAULT_BRANCH="$(harness_field default_branch main)"
 RUNTIME_DIR="$(harness_field runtime_dir .claude/runtime)"
+[[ -z "$MODEL" ]] && MODEL="$(harness_field codex_model "")"
+[[ -z "$EFFORT" ]] && EFFORT="$(harness_field codex_effort "")"
 
 BRANCH="$(git symbolic-ref --short -q HEAD 2>/dev/null)"
 [[ -z "$BRANCH" ]] && BRANCH="(detached)"
@@ -183,6 +193,7 @@ write_report() { # body-file-or-empty note
     echo "- files: $FILES_COUNT"
     echo "- diff: $DIFF_OUT (${DIFF_BYTES:-0} bytes)"
     echo "- model: ${MODEL:-(default)}"
+    echo "- effort: ${EFFORT:-(default)}"
     echo "- timestamp: $TS_UTC"
     echo
     echo "---"
@@ -295,7 +306,7 @@ kill_tree() {
 
 START=$(date +%s)
 # shellcheck disable=SC2086
-codex $CODEX_ARGS ${MODEL:+--model "$MODEL"} "$(cat "$PROMPT_FILE")" < /dev/null > "$RAW_OUT" 2>&1 &
+codex $CODEX_ARGS ${MODEL:+--model "$MODEL"} ${EFFORT:+-c "model_reasoning_effort=$EFFORT"} "$(cat "$PROMPT_FILE")" < /dev/null > "$RAW_OUT" 2>&1 &
 PID=$!
 
 LAST_SIZE=0

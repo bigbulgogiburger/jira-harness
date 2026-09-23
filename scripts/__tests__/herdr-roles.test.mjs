@@ -109,6 +109,21 @@ test('codex-review: Herdr 밖·codex_via=exec 면 status:missing(exec 폴백) ·
   assert.equal(ledger.slug, 'feat-ABC-6');
 });
 
+test('codex-review: review.codex_model·codex_effort 는 상주 reviewer 를 새로 띄울 때 kind 기본 인자 뒤에 붙는다', () => {
+  const dir = makeRepo({ review: { codex: true, codex_via: 'herdr', codex_model: 'gpt-6-sol', codex_effort: 'xhigh' } });
+  const out = join(dir, '.claude/runtime/issues/feat-ABC-5.herdr-codex.json');
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, JSON.stringify({ findings: [], summary: 's' }));
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
+  const r = lanes(dir, ['codex-review', '--slug', 'feat-ABC-5', '--files', 'a.js'], a.env);
+  assert.match(lastLine(r.stdout), /^CODEX_RESULT=\{"status":"ok"/, r.stderr);
+  const start = calls(a.log).find(x => x[0] === 'agent' && x[1] === 'start');
+  assert.ok(start, 'agent start 호출이 있어야 한다');
+  const native = start.slice(start.indexOf('--') + 1).join(' ');
+  assert.match(native, /--ask-for-approval never/, 'kind 기본 인자는 유지');
+  assert.match(native, /--model gpt-6-sol -c model_reasoning_effort=xhigh$/);
+});
+
 test('gate: runner pane(없으면 split down · 있으면 pane get 확인 후 재사용 · 죽었으면 재생성)에 gate-run 을 보내고 GATE_DONE 을 기다린다 · --no-wait · gate-run 은 결과 파일과 표식', () => {
   const dir = makeRepo();
   const { env, log } = inside(dir);

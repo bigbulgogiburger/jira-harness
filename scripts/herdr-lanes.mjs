@@ -75,6 +75,12 @@ export const DEFAULT_KIND_ARGS = {
   claude: ['--permission-mode', 'bypassPermissions'],
   grok: [],
 };
+/** Codex 판정 모델·effort(review.codex_model·codex_effort) → codex 네이티브 인자. codex 가 아닌 kind 나 미설정이면 [] — codex 기본값을 쓴다(codex-review.sh 와 같은 규칙) */
+export function reviewModelArgs(cfg, kind) {
+  if (kind !== 'codex') return [];
+  const { codex_model: m, codex_effort: e } = cfg.review ?? {};
+  return [...(m ? ['--model', m] : []), ...(e ? ['-c', `model_reasoning_effort=${e}`] : [])];
+}
 /**
  * kind 별 "무엇을 맡기나" 한 줄 — plan 이 레인에 kind 를 고를 때 읽는 재료. harness.json.herdr.kinds.profiles 가 덮어쓴다.
  * ⚠ 이것은 **가설**이지 측정치가 아니다. 어느 kind 가 어느 일을 잘하는지는 레인 기록(상태 JSON lanes[].result 의 kind·status·tests·seconds)이
@@ -789,6 +795,9 @@ async function main() {
     const out = fwd(join(root, cfg.runtime_dir, 'issues', `${slug}.herdr-${kind}${since ? '-delta' : ''}.json`));
     const fresh = reviewerFresh({ cfg, root, kind, slug });
     const lane = { name: `review-${kind}`, kind, reuse: true, fresh, out, prompt: reviewPrompt({ root, diffCmd, files, axes: opt('--axes') }) };
+    // 모델·effort 는 pane 을 새로 띄울 때만 먹는다 — 재사용되는 상주 reviewer 는 기동 시점 값을 유지한다
+    const modelArgs = reviewModelArgs(cfg, kind);
+    if (modelArgs.length) lane.args = [...((hc.kind_args ?? {})[kind] ?? DEFAULT_KIND_ARGS[kind] ?? []), ...modelArgs];
     herdrPing(cwd, `codex-review ${kind}${fresh ? ' (/new)' : ''}`);
     const l = await runLane(lane, { env, timeoutS: hc.lane_timeout_s ?? 900, kindArgs: hc.kind_args ?? {}, closePanes: false, laneCwd: root, autoTrust: hc.auto_trust !== false });
     const findings = mergeFindings({ lanes: [l] });

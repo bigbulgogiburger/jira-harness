@@ -4,7 +4,7 @@
 # 모든 명령은 argv 배열이고 플러그인 루트에서 실행된다. Herdr 밖·하네스 밖에서는 스크립트가 스스로 무동작한다.
 id = "bigbulgogiburger.jira-harness"
 name = "jira-harness"
-version = "3.5.0"
+version = "3.6.0"
 min_herdr_version = "0.9.0"
 platforms = ["windows", "macos", "linux"]
 
