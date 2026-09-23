@@ -34,7 +34,10 @@
 #
 #   출력 파일 기본: <runtime_dir>/review/<branch-slug>-codex-<UTC ts>.md
 #   판정은 exit code 가 아니라 **출력 본문**이다 — 영문 앵커 `Verdict:` 줄(PASS|BLOCK|UNKNOWN)과
-#   `BLOCKER` 로 시작하는 항목 수를 센다. 사용량 한도 문구면 status=limit. codex 가 PATH 에
+#   BLOCKER 항목 수(`BLOCKER` 로 시작하는 줄 또는 프롬프트 형식의 `- severity: BLOCKER` 줄)를 센다.
+#   세는 구간은 마지막 `tokens used` 뒤(codex exec 가 끝에 다시 찍는 최종 메시지)다 — 그 앞에는
+#   프롬프트 되울림(형식 안내의 `severity: BLOCKER | MAJOR | MINOR`·`Verdict: BLOCK`)과 같은 메시지의
+#   스트리밍 사본이 있다. 표식이 없으면 전체를 본다. 사용량 한도 문구면 status=limit. codex 가 PATH 에
 #   없으면 status=missing(조용히 통과시키지 않는다). 타임아웃/캡 절단은 status=fail.
 #
 #   마지막 stdout 줄은 정확히 다음 형식(그 외 로그는 전부 stderr):
@@ -363,9 +366,16 @@ fi
 write_report "$RAW_OUT" ""
 
 if [[ "$STATUS" == "ok" ]]; then
-  VERDICT="$(grep -Eo 'Verdict:[[:space:]]*(PASS|BLOCK|UNKNOWN)' "$RAW_OUT" 2>/dev/null | tail -1 | sed -E 's/.*(PASS|BLOCK|UNKNOWN).*/\1/')"
+  FINAL_OUT="$TMP_DIR/codex-final.txt"
+  MARK="$(grep -n '^tokens used' "$RAW_OUT" 2>/dev/null | tail -1 | cut -d: -f1)"
+  if [[ -n "$MARK" ]]; then
+    tail -n +"$((MARK + 1))" "$RAW_OUT" | sed '1{/^[0-9][0-9,]*[[:space:]]*$/d;}' > "$FINAL_OUT"
+  else
+    cp "$RAW_OUT" "$FINAL_OUT"
+  fi
+  VERDICT="$(grep -Eo 'Verdict:[[:space:]]*(PASS|BLOCK|UNKNOWN)' "$FINAL_OUT" 2>/dev/null | tail -1 | sed -E 's/.*(PASS|BLOCK|UNKNOWN).*/\1/')"
   [[ -z "$VERDICT" ]] && VERDICT="UNKNOWN"
-  BLOCKERS="$(grep -Ec '^[[:space:]]*([0-9]+\.[[:space:]]*|[-*][[:space:]]*)?BLOCKER' "$RAW_OUT" 2>/dev/null)"
+  BLOCKERS="$(grep -Ec '^[[:space:]]*(([0-9]+\.[[:space:]]*|[-*][[:space:]]*)?BLOCKER|([-*][[:space:]]*)?severity:[[:space:]]*\**BLOCKER\**[[:space:]]*$)' "$FINAL_OUT" 2>/dev/null)"
   [[ -z "$BLOCKERS" ]] && BLOCKERS=0
   emit_result "ok" "$BLOCKERS" "$VERDICT" "$OUT_PATH" "$FILES_COUNT" ""
   exit 0

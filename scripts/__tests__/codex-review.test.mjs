@@ -57,6 +57,43 @@ case "\${FAKE_CODEX_MODE:-2}" in
     echo "Verdict: PASS"
     exit 0
     ;;
+  7)
+    # 실제 codex exec 출력 형태 — 프롬프트 echo(형식 견본 포함) → codex 스트림 → tokens used → 최종 메시지 재출력
+    cat <<'EOF'
+user
+- severity: BLOCKER | MAJOR | MINOR
+Verdict: PASS
+Verdict: BLOCK
+codex
+- severity: BLOCKER
+  file: a.txt
+- severity: MAJOR
+  file: a.txt
+Verdict: BLOCK
+tokens used
+1,234
+- severity: BLOCKER
+  file: a.txt
+- severity: MAJOR
+  file: a.txt
+Verdict: BLOCK
+EOF
+    exit 0
+    ;;
+  8)
+    # 최종 메시지에 Verdict 가 없다 — 프롬프트 echo 의 형식 견본(Verdict: PASS/BLOCK)을 판정으로 오인하면 안 된다
+    cat <<'EOF'
+user
+Verdict: PASS
+Verdict: BLOCK
+codex
+리뷰를 끝내지 못했습니다
+tokens used
+1,234
+리뷰를 끝내지 못했습니다
+EOF
+    exit 0
+    ;;
 esac
 `;
 
@@ -147,6 +184,24 @@ test('PASS 판정: blockers=0, verdict=PASS, exit 0', () => {
   assert.equal(r.result.verdict, 'PASS');
   assert.equal(r.result.blockers, 0);
   assert.equal(r.status, 0);
+});
+
+test('실제 codex 출력 형식: 최종 메시지만 센다 — 프롬프트 echo·재출력 중복 없이 blockers=1, verdict=BLOCK', () => {
+  const { dir } = makeRepo();
+  const bin = makeFixtureBin();
+  const r = run(dir, [], { PATH: pathWithFixture(bin), FAKE_CODEX_MODE: '7' });
+  assert.equal(r.result.status, 'ok');
+  assert.equal(r.result.verdict, 'BLOCK');
+  assert.equal(r.result.blockers, 1);
+});
+
+test('최종 메시지에 Verdict 가 없으면 UNKNOWN — 프롬프트 echo 의 형식 견본을 판정으로 쓰지 않는다', () => {
+  const { dir } = makeRepo();
+  const bin = makeFixtureBin();
+  const r = run(dir, [], { PATH: pathWithFixture(bin), FAKE_CODEX_MODE: '8' });
+  assert.equal(r.result.status, 'ok');
+  assert.equal(r.result.verdict, 'UNKNOWN');
+  assert.equal(r.result.blockers, 0);
 });
 
 test('사용량 한도 문구 → status=limit, exit 1 (codex exit code 는 1 이어도 문구로 판정)', () => {
