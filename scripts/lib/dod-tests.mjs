@@ -5,7 +5,8 @@
 //     나눠 읽으면 판정은 같고 기동은 1번이다. 전량 게이트는 스택 test 단계가 이미 전부를 돌렸으므로 그 리포트를 읽기만 한다.
 //
 // 어댑터 — harness.json `stacks.<name>.dod_tests = {adapter, run, reports?}`:
-//   gradle-junit  `<run> --tests '<p>' …` · 리포트 = `<reports>/TEST-*.xml`(스택 dir 기준, 기본 build/test-results/test)의 <testsuite> 속성.
+//   gradle-junit  `<run> --tests '<p>' …` · 리포트 = `<reports>/TEST-*.xml`(스택 dir 기준, 기본 build/test-results/test)의 <testsuite> 건수 속성 · 클래스 이름은 파일명
+//                 (TEST-<FQCN>.xml — <testsuite name> 은 클래스에 @DisplayName 이 있으면 그 문구다).
 //                 패턴은 Gradle --tests 문법(`*` 와일드카드 · 대문자로 시작하면 단순 클래스명)을 **클래스 단위**로 맞춘다 — 메서드 단위 선택은
 //                 어떤 스위트에도 안 걸려 "분모 0" 으로 FAIL 한다(클래스 패턴으로 쓸 것).
 //                 Gradle 은 XML 을 쓰기 전에 지난 TEST-*.xml 을 지우므로(Binary2JUnitXmlReportGenerator) exit 0 이면 남은 XML 이 이번 실행
@@ -38,9 +39,9 @@ function readHead(p, n) {
   try { const buf = Buffer.alloc(n); const len = readSync(fd, buf, 0, n, 0); return buf.toString('utf8', 0, len); }
   finally { closeSync(fd); }
 }
-const decodeXml = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
-/** JUnit XML 디렉터리의 스위트 — [{name(FQCN), passed, failed, skipped, mtime}]. 파일 머리의 <testsuite …> 만 읽는다(system-out 이 커도 무관) */
+/** JUnit XML 디렉터리의 스위트 — [{name(FQCN), passed, failed, skipped, mtime}]. 파일 머리의 <testsuite …> 만 읽는다(system-out 이 커도 무관).
+ *  FQCN 은 파일명(TEST-<FQCN>.xml)에서 — <testsuite name> 은 클래스에 @DisplayName 이 있으면 그 문구라 클래스 패턴이 안 걸린다(2026-09-23 Gradle 8.5 실측) */
 export function readJunitSuites(dir) {
   if (!existsSync(dir)) return [];
   const out = [];
@@ -52,7 +53,7 @@ export function readJunitSuites(dir) {
     const attr = n => { const a = new RegExp(`\\s${n}="([^"]*)"`).exec(m[1]); return a ? a[1] : null; };
     const tests = Number(attr('tests')) || 0, skipped = Number(attr('skipped')) || 0;
     const failed = (Number(attr('failures')) || 0) + (Number(attr('errors')) || 0);
-    out.push({ name: decodeXml(attr('name') ?? f.slice(5, -4)), passed: Math.max(0, tests - skipped - failed), failed, skipped, mtime: statSync(p).mtimeMs });
+    out.push({ name: f.slice(5, -4), passed: Math.max(0, tests - skipped - failed), failed, skipped, mtime: statSync(p).mtimeMs });
   }
   return out;
 }
