@@ -277,9 +277,9 @@ const runnerCalls = (dir, stack) => readFileSync(join(dir, stack, '.fake-runner.
 function setDod(dir, dod) { const st = readState(stateFile(dir)); st.dod = dod; writeState(stateFile(dir), st); }
 function setRunner(dir, stack, patch) { const f = join(dir, stack, '.fake-runner.json'); writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), ...patch })); }
 
-test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고(선택 합집합) 리포트로 항목마다 판정한다 — 분모 0·실패·하한 미달은 그 항목만 FAIL · 컴파일 실패면 지난 XML 을 믿지 않는다', () => {
+test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고(선택 합집합) 리포트로 항목마다 판정한다 — 분모 0·실패·하한 미달은 그 항목만 FAIL · 컴파일 실패면 지난 XML 을 믿지 않는다 · 클래스 이름은 파일명(<testsuite name> 은 @DisplayName 일 수 있다)', () => {
   const dir = dodTestsRepo({
-    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }, { name: 'com.x.OtherTest', tests: 9 }],
+    suites: [{ name: 'com.x.FeeTest', tests: 3, display: '수수료 계산 — 기본료' }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1, display: '취소된 주문' }, { name: 'com.x.OtherTest', tests: 9 }],
     files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/a/y.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
   });
   const dod = [
@@ -310,7 +310,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
 
   // 위반 주입 ② 한 스위트 실패 → 그 항목만 FAIL(배치 exit 1 이어도 다른 항목은 이번 실행 결과로 PASS)
   setDod(dir, dod);
-  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1, display: '수수료 계산 — 기본료' }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
   assert.equal(gate(dir, '--commit').status, 1);
   s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['FAIL', 'PASS', 'PASS', 'PASS']);
@@ -339,7 +339,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
 test('DoD tests 전량: 스택 test 명령이 dod_tests.run 과 같으면 그 리포트로 판정하고 다시 돌리지 않는다 · 리포트에 안 걸린 항목(기본 test 밖)만 배치 · vitest 는 test 단계에 JSON 리포터가 붙는다', () => {
   const dir = dodTestsRepo({
     full: true,
-    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.SlowIT', tests: 2, default: false }],
+    suites: [{ name: 'com.x.FeeTest', tests: 3, display: '수수료 계산 — 기본료' }, { name: 'com.x.SlowIT', tests: 2, default: false }],
     files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
   });
   setDod(dir, [
