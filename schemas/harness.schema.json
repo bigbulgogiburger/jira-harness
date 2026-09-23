@@ -217,6 +217,7 @@
           "additionalProperties": { "type": "array", "items": { "type": "string" } }
         },
         "lane_timeout_s": { "type": "integer", "minimum": 30, "description": "레인 1개의 응답 대기 상한(초). 기본 900" },
+        "settle_grace_s": { "type": "integer", "minimum": 1, "description": "레인이 결과 파일 없이 settled 됐을 때 실패로 읽기 전에 지켜보는 시간(초). 그 사이 일을 시작하면(working) 다시 기다린다 — 제출 직후 남아 있던 idle 에 agent wait 가 곧바로 풀리는 형태(2026-09-23 실측) 방어. 기본 30" },
         "reviewer_context": { "type": "string", "enum": ["issue", "always", "never"], "description": "상주 reviewer 의 컨텍스트를 언제 비우나(/new) — issue(기본: 이슈 slug 가 바뀌면) · always(매 호출) · never" },
         "close_panes": { "type": "boolean", "description": "레인이 끝나면 pane 을 닫는다. 기본 false(사람이 화면을 본다)" }
       }
@@ -294,6 +295,16 @@
             "null"
           ],
           "description": "KEY=VALUE 줄 파일(gitignore). 게이트 명령 환경에 주입"
+        },
+        "dod_tests": {
+          "type": "object",
+          "required": ["adapter", "run"],
+          "description": "DoD `tests` 항목을 이 스택에서 한 번에 돌리는 방법. 없으면 그 스택의 `tests` 항목은 probe 문자열로 돈다. 전량 게이트는 test 명령이 run 과 같으면 그 리포트를 읽고 다시 돌리지 않는다",
+          "properties": {
+            "adapter": { "type": "string", "enum": ["gradle-junit", "vitest"] },
+            "run": { "type": "string", "description": "선택 없이 도는 기본 명령 — 예 ./gradlew test · npx vitest run. 게이트가 선택(--tests '<p>' · 경로)과 리포터 인자를 덧붙인다" },
+            "reports": { "type": "string", "description": "gradle-junit: JUnit XML 디렉터리(스택 dir 기준). 기본 build/test-results/test" }
+          }
         }
       }
     }

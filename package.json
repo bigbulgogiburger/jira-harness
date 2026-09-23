@@ -1,6 +1,6 @@
 {
   "name": "jira-harness",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "private": true,
   "type": "module",
   "description": "Claude Code plugin — Jira-driven development harness (issue router, saved workflows, commit/push gate hook, bookkeeping scripts)",

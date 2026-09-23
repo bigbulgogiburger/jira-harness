@@ -21,11 +21,14 @@
 // 레인 1개의 절차(startLane → finishLane):
 //   1. pane 확보 — 재사용(agent list) / split / worktree(create · 이미 열려 있으면 open 재사용)
 //   2. `agent start <name> --kind <kind> --pane <id> -- <kind_args>` (kind 별 네이티브 인자 — Windows codex 는 샌드박스 해제가 필수)
-//   3. 프롬프트는 argv 가 아니라 파일로 — `<out>.prompt.md` 를 쓰고 "그 파일을 읽고 따르라" 한 줄만 보낸다
+//   3. 프롬프트는 argv 가 아니라 파일로 — `<out>.prompt.md` 를 쓰고 "그 파일을 읽고 따르라" 한 줄만 보낸다.
+//      ★보내기 전에 지난 라운드의 `<out>`·`<out>.error.txt` 를 `.prev` 로 치운다 — out 경로는 라운드마다 같아서 남겨 두면 6 이 지난 결과를 이번 것으로 읽는다
 //   4. ★제출 확인 — `agent prompt` 의 성공 응답은 제출을 증명하지 않는다(codex·grok 실측). `agent get` 이 working/blocked 로 바뀌었는지 보고,
 //      아니면 화면에 남은 프롬프트를 `send-keys enter` 로 밀어 넣는다(1회)
-//   5. `agent wait` 로 settled 대기. blocked 면 화면을 읽어 **"Teach auto mode" 다이얼로그일 때만** `esc`(그 외 승인·권한 UI 는 사람 몫)
-//   6. ★결과는 화면이 아니라 파일 — 레인이 `<out>` 에 쓴 JSON 을 읽는다(alt-screen 스크롤백은 회수되지 않는다). 없으면 failed
+//   5. `agent wait` 로 settled 대기. blocked 면 화면을 읽어 **"Teach auto mode" 다이얼로그일 때만** `esc`(그 외 승인·권한 UI 는 사람 몫).
+//      ★settled 인데 이번 결과가 없으면 곧바로 실패로 읽지 않는다 — 제출 직후 남아 있던 idle 에 wait 가 풀리기도 한다. settle_grace_s(기본 30 · harness.json herdr.settle_grace_s) 동안
+//      지켜보고 일을 시작했으면 다시 기다린다(전체 상한은 timeout_s)
+//   6. ★결과는 화면이 아니라 파일 — 레인이 `<out>` 에 쓴 JSON 을 읽는다(alt-screen 스크롤백은 회수되지 않는다). **제출 뒤에 생긴 파일만** 결과다. 없으면 failed
 //   7. `close_panes` 면 pane 을 닫는다(기본 false — 사람이 화면을 본다). 재사용한 pane 은 닫지 않는다
 //   spec 의 레인들은 **전부 띄운 뒤 기다린다**(spec.parallel 기본 true) — 레인이 셋이면 벽시계는 셋의 최대값이다.
 //
@@ -39,10 +42,10 @@
 //   node herdr-lanes.mjs gate --full|--commit [--stage-all] [--no-wait] [--cwd] [--json]
 //       → runner pane 에서 gate.mjs 를 돌린다. 기록·토스트는 gate.mjs 가 한다
 //   node herdr-lanes.mjs run --spec <spec.json> [--cwd] [--json]
-//       spec = { lanes: [{ name, kind, prompt | prompt_file, out, cwd?, worktree_branch?, placement?: split|workspace, worktree_dir?, args?[], reuse?, fresh? }], timeout_s?, close_panes?, parallel?, auto_trust? }
+//       spec = { lanes: [{ name, kind, prompt | prompt_file, out, cwd?, worktree_branch?, placement?: split|workspace, worktree_dir?, args?[], reuse?, fresh? }], timeout_s?, settle_grace_s?, close_panes?, parallel?, auto_trust? }
 // 종료 코드: 0 (레인 실패는 결과 JSON 의 status 로 본다 — 리뷰 레인이 죽었다고 라우터를 죽이지 않는다) · 2 사용법/설정
 // Herdr 밖(HERDR_PANE_ID 없음)이면 status:"failed" reason:"outside herdr" — 라우터는 그때 exec/Workflow 경로로 돌아간다.
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, renameSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -120,6 +123,45 @@ function paneTail(pane, env, lines = 15) {
   const r = herdr(['pane', 'read', pane, '--lines', String(lines)], { cwd, env, timeout: 5000 });
   return r.ok ? (r.out ?? '').slice(-600) : '';
 }
+
+/** `<out>` → 지난 라운드 보존 경로. a.json → a.prev.json */
+function prevPath(out) { return /\.json$/i.test(out) ? out.replace(/\.json$/i, '.prev.json') : `${out}.prev`; }
+/**
+ * 지난 라운드의 결과·오류 파일을 치운다. out 경로는 라운드마다 같아서(<slug>.herdr-<kind>.json) 남겨 두면 wait 가 풀린 직후 그 파일을
+ * 이번 결과로 읽는다(2026-09-23 실측: 델타 리뷰가 23초 만에 지난 라운드 findings 를 반환). 지우지 않고 `.prev` 로 1벌 보존한다.
+ * 못 옮기면(잠김) 지우고, 그것도 못 하면 finishLane 이 그 파일이 다시 쓰였을 때만 읽는다(isNew). 반환 = 치운 경로들
+ */
+export function setAsidePrevious(out) {
+  const moved = [];
+  for (const [from, to] of [[out, prevPath(out)], [`${out}.error.txt`, `${prevPath(out)}.error.txt`]]) {
+    if (!existsSync(from)) continue;
+    try { rmSync(to, { force: true }); renameSync(from, to); moved.push(fwd(to)); }
+    catch { try { rmSync(from, { force: true }); moved.push(`(삭제) ${fwd(from)}`); } catch { /* isNew 가 막는다 */ } }
+  }
+  return moved;
+}
+function mtimeOf(p) { try { return statSync(p).mtimeMs; } catch { return null; } }
+/**
+ * 이번 결과인가 — 제출 때 없던 파일이면 존재만으로, (못 치워서) 남아 있던 파일이면 그 뒤에 다시 쓰였을 때만(leftover = 제출 때의 mtime).
+ * 제출 시각과 비교하지 않는다 — 에이전트가 파일을 복사해 만들면 mtime 이 원본 것이라(Windows copy 는 시각을 보존한다) 새 결과를 지난 것으로 오판한다
+ */
+function isNew(p, leftover) { const m = mtimeOf(p); return m != null && (leftover == null || m > leftover); }
+/**
+ * settled 인데 이번 결과가 없을 때 graceMs 동안 지켜본다 — 'file'(결과가 생겼다) · 'working'(일을 시작했다 — 다시 기다린다) · 'gone' · 'idle'.
+ * 제출 직후 남아 있던 idle 에 `agent wait` 가 곧바로 풀리는 형태가 있다(2026-09-23 실측: 레인 18.4초에 "결과 파일 없음", 에이전트는 8분 뒤 결과를 썼다)
+ */
+async function watchSettled(name, env, hasResult, graceMs) {
+  const until = Date.now() + graceMs;
+  while (Date.now() < until) {
+    await sleep(Math.max(200, Math.min(2000, until - Date.now())));
+    if (hasResult()) return 'file';
+    const s = agentState(name, env);
+    if (s == null) return 'gone';
+    if (s === 'working' || s === 'blocked') return 'working';
+  }
+  return 'idle';
+}
+const MAX_REWAITS = 5;
 
 /**
  * 기동 직후 다이얼로그 사다리 — 프롬프트를 보내기 *전에* 화면을 읽어 알려진 다이얼로그만 걷는다(최대 4회).
@@ -369,7 +411,10 @@ export async function startLane(lane, { env = process.env, kindArgs = {}, laneCw
   // 프롬프트를 보내기 직전 생존 확인 — 재사용한 에이전트가 그새 죽었을 수도 있다. 죽은 pane 에 보낸 글은 셸 명령이 된다
   if (agentState(name, env) == null) return finish({ reason: `에이전트 ${name} 이 없다(종료됨) — 프롬프트를 보내지 않았다`, screen_tail: paneTail(pane, env) });
 
-  // 3. 프롬프트 파일 — prompt_of(worktreePath) 는 pane 을 잡은 뒤에야 경로를 알 수 있는 레인(implement)용
+  // 3. 지난 라운드 결과를 치우고(setAsidePrevious) 프롬프트 파일 — prompt_of(worktreePath) 는 pane 을 잡은 뒤에야 경로를 알 수 있는 레인(implement)용
+  const setAside = setAsidePrevious(resolve(lane.out));
+  if (setAside.length) res.set_aside = setAside;
+  ctx.leftover = { out: mtimeOf(resolve(lane.out)), err: mtimeOf(`${resolve(lane.out)}.error.txt`) }; // 보통 둘 다 null — 못 치운 파일이 있으면 그 시각
   const promptText = lane.prompt ?? (typeof lane.prompt_of === 'function' ? lane.prompt_of(res.worktree?.path ?? workDir) : lane.prompt_file ? readFileSync(resolve(lane.prompt_file), 'utf8') : '');
   if (!promptText.trim()) return finish({ reason: '프롬프트가 비었다' });
   const promptFile = resolve(`${lane.out}.prompt.md`);
@@ -399,16 +444,22 @@ export async function startLane(lane, { env = process.env, kindArgs = {}, laneCw
 }
 
 /** 띄운 레인을 끝까지 기다리고 결과 파일을 읽는다(5~7). deadline(ms epoch) 이 있으면 남은 시간만 기다린다 */
-export async function finishLane(ctx, { timeoutS = 900, closePanes = false, deadline = null } = {}) {
+export async function finishLane(ctx, { timeoutS = 900, closePanes = false, deadline = null, settleGraceS = 30 } = {}) {
   const { lane, res, env, name, pane, t0 } = ctx;
   if (ctx.done) return res;
   const done = (patch) => { Object.assign(res, patch); res.seconds = +((Date.now() - t0) / 1000).toFixed(1); return res; };
-  const waitMs = () => deadline ? Math.max(5000, deadline - Date.now()) : timeoutS * 1000;
+  const end = deadline ?? Date.now() + timeoutS * 1000;
+  const waitMs = () => Math.max(5000, end - Date.now());
+  const outPath = resolve(lane.out);
+  const errFile = `${outPath}.error.txt`;
+  const left = ctx.leftover ?? {};
+  const hasResult = () => isNew(outPath, left.out) || isNew(errFile, left.err);
   let state = null;
 
-  // 5. settled 대기 (+ teach 다이얼로그만 자동 esc 1회 · 곧바로 settled 됐는데 입력창에 문장이 그대로면 enter 1회 뒤 다시 대기)
-  let escaped = false; let renudged = false;
-  for (let round = 0; round < 3; round++) {
+  // 5. settled 대기 (+ teach 다이얼로그만 자동 esc 1회 · 곧바로 settled 됐는데 입력창에 문장이 그대로면 enter 1회 뒤 다시 대기
+  //    · 결과 없이 settled 면 settleGraceS 동안 지켜보고 일을 시작했으면 다시 대기 — 최대 MAX_REWAITS 회, 전체 상한은 end)
+  let escaped = false; let renudged = false; let rewaits = 0;
+  for (let round = 0; round < 3 + MAX_REWAITS; round++) {
     const ms = waitMs();
     const w = herdr(['agent', 'wait', name, '--timeout', String(ms)], { cwd, env, timeout: ms + 5000 });
     state = w.ok ? (w.value?.result?.state ?? w.value?.result?.agent?.state ?? agentState(name, env)) : agentState(name, env);
@@ -418,20 +469,25 @@ export async function finishLane(ctx, { timeoutS = 900, closePanes = false, dead
       if (!escaped && TEACH_DIALOG.test(s)) { herdr(['agent', 'send-keys', name, 'esc'], { cwd, env }); escaped = true; await sleep(1000); continue; }
       return done({ status: 'blocked', reason: '에이전트가 승인/질문 UI 에서 멈춤 — 사람이 pane 을 볼 것', state, screen_tail: s.slice(-600) });
     }
-    if (!renudged && !existsSync(resolve(lane.out)) && promptStillTyped(name, env)) {
+    if (hasResult()) break;
+    if (!renudged && promptStillTyped(name, env)) {
       // 제출이 안 된 채 idle 로 굳은 형태(codex 실측) — 결과도 없고 문장이 그대로면 enter 한 번 더 넣고 다시 기다린다
       herdr(['agent', 'send-keys', name, 'enter'], { cwd, env }); renudged = true; res.nudged = true; await sleep(2000); continue;
+    }
+    if (rewaits < MAX_REWAITS && end - Date.now() > 0) {
+      const seen = await watchSettled(name, env, hasResult, Math.min(settleGraceS * 1000, end - Date.now()));
+      if (seen === 'working') { rewaits++; continue; }
     }
     break;
   }
   res.escaped = escaped;
+  if (rewaits) res.rewaits = rewaits;
 
-  // 6. 결과 파일
-  const outPath = resolve(lane.out);
-  if (!existsSync(outPath)) {
-    const errFile = `${outPath}.error.txt`;
+  // 6. 결과 파일 — 제출 뒤에 쓰인 것만
+  if (!isNew(outPath, left.out)) {
     const tail = screen(name, env, 15).slice(-600);
-    return done({ status: LIMIT_PATTERN.test(tail) ? 'limit' : 'failed', reason: existsSync(errFile) ? `레인 보고 오류: ${readFileSync(errFile, 'utf8').slice(0, 300)}` : `결과 파일 없음: ${fwd(outPath)}`, state, screen_tail: tail });
+    const stale = left.out != null ? ' (제출 전부터 있던 파일(못 치움)이 그대로다 — 지난 결과라 읽지 않았다)' : '';
+    return done({ status: LIMIT_PATTERN.test(tail) ? 'limit' : 'failed', reason: isNew(errFile, left.err) ? `레인 보고 오류: ${readFileSync(errFile, 'utf8').slice(0, 300)}` : `결과 파일 없음: ${fwd(outPath)}${stale}`, state, screen_tail: tail });
   }
   let parsed;
   try { parsed = JSON.parse(readFileSync(outPath, 'utf8')); } catch (e) { return done({ reason: `결과 JSON 파싱 실패: ${e.message}`, state }); }
@@ -449,7 +505,7 @@ export async function runLane(lane, opts = {}) {
 /** spec 의 레인들 — 기본은 전부 띄운 뒤 기다린다(parallel). 결과 파일이 겹치는 레인·같은 이름의 레인은 spec 을 만드는 쪽이 피한다 */
 export async function runSpec(spec, opts = {}) {
   const lanes = Array.isArray(spec.lanes) ? spec.lanes : [];
-  const o = { ...opts, timeoutS: spec.timeout_s ?? opts.timeoutS ?? 900, closePanes: spec.close_panes ?? opts.closePanes ?? false, autoTrust: spec.auto_trust ?? opts.autoTrust ?? true };
+  const o = { ...opts, timeoutS: spec.timeout_s ?? opts.timeoutS ?? 900, closePanes: spec.close_panes ?? opts.closePanes ?? false, autoTrust: spec.auto_trust ?? opts.autoTrust ?? true, ...(spec.settle_grace_s != null ? { settleGraceS: spec.settle_grace_s } : {}) };
   const results = [];
   if (spec.parallel === false) {
     for (const l of lanes) results.push(await runLane(l, o));
@@ -487,7 +543,7 @@ export function buildVerifySpec({ cfg, root, diffRef, files, slug, kinds, axes, 
     out: fwd(join(outDir, `${slug}.herdr-${kind}.json`)),
     prompt: reviewPrompt({ root, diffCmd: `git diff ${diffRef}`, files, axes }),
   }));
-  return { lanes, timeout_s: hc.lane_timeout_s ?? 900, close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {} };
+  return { lanes, timeout_s: hc.lane_timeout_s ?? 900, close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {}, ...(hc.settle_grace_s != null ? { settle_grace_s: hc.settle_grace_s } : {}) };
 }
 
 function mergeFindings(run) {
@@ -577,7 +633,7 @@ export function buildImplementSpec({ cfg, root, slug, state, only = [], contract
     };
   });
   return {
-    lanes, parallel: true, timeout_s: hc.lane_timeout_s ?? 900, close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {}, auto_trust: hc.auto_trust !== false,
+    lanes, parallel: true, timeout_s: hc.lane_timeout_s ?? 900, close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {}, auto_trust: hc.auto_trust !== false, ...(hc.settle_grace_s != null ? { settle_grace_s: hc.settle_grace_s } : {}),
     placement, worktree_dir: worktreeDir,
     prep: { copy: hc.worktree_copy ?? [], init: hc.worktree_init ?? [], cfg },
     skipped: only.length ? declared.filter(l => !only.includes(l.name)).map(l => l.name) : [],
@@ -740,7 +796,7 @@ async function main() {
     }
     const deadline = Date.now() + spec.timeout_s * 1000;
     const results = [];
-    for (const c of started) results.push(await finishLane(c, { timeoutS: spec.timeout_s, closePanes: false, deadline }));
+    for (const c of started) results.push(await finishLane(c, { timeoutS: spec.timeout_s, closePanes: false, deadline, ...(spec.settle_grace_s != null ? { settleGraceS: spec.settle_grace_s } : {}) }));
 
     // 회수·적용 — 순서대로. 결과 파일이 없어도(레인이 죽어도) worktree 에 남은 변경은 패치로 뽑아 둔다(적용은 안 함)
     const noApply = flag('--no-apply');
@@ -799,7 +855,7 @@ async function main() {
     const modelArgs = reviewModelArgs(cfg, kind);
     if (modelArgs.length) lane.args = [...((hc.kind_args ?? {})[kind] ?? DEFAULT_KIND_ARGS[kind] ?? []), ...modelArgs];
     herdrPing(cwd, `codex-review ${kind}${fresh ? ' (/new)' : ''}`);
-    const l = await runLane(lane, { env, timeoutS: hc.lane_timeout_s ?? 900, kindArgs: hc.kind_args ?? {}, closePanes: false, laneCwd: root, autoTrust: hc.auto_trust !== false });
+    const l = await runLane(lane, { env, timeoutS: hc.lane_timeout_s ?? 900, kindArgs: hc.kind_args ?? {}, closePanes: false, laneCwd: root, autoTrust: hc.auto_trust !== false, ...(hc.settle_grace_s != null ? { settleGraceS: hc.settle_grace_s } : {}) });
     const findings = mergeFindings({ lanes: [l] });
     const blockers = findings.filter(f => f.severity === 'BLOCKER').length;
     const status = l.status === 'done' ? 'ok' : l.status === 'limit' ? 'limit' : 'fail';

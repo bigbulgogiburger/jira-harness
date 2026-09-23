@@ -46,7 +46,7 @@ function makeRepo(herdrPatch = {}) {
   writeFileSync(join(dir, 'backend/App.java'), 'class App {}\n');
   writeFileSync(join(dir, 'frontend/app.js'), 'export default 1;\n');
   writeFileSync(join(dir, '.gitignore'), '.claude/runtime/\n');
-  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'implement', kinds: { implement: ['codex', 'claude'] }, ...herdrPatch } };
+  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'implement', kinds: { implement: ['codex', 'claude'] }, settle_grace_s: 1, ...herdrPatch } };
   writeFileSync(join(dir, '.claude/harness.json'), JSON.stringify(cfg, null, 2) + '\n');
   g(dir, 'add', '-A');
   g(dir, 'commit', '-q', '-m', 'init');
@@ -72,10 +72,11 @@ function plantFake(dir, wtDir, lane) {
   g(dir, 'worktree', 'add', '-q', '--detach', p, 'HEAD');
   return p;
 }
+/** 레인 사이드카 — 에이전트가 제출 뒤에 쓰는 것을 흉내(대역이 <f>.agent 를 prompt 때 <f> 로 복사). 미리 <f> 에 두면 실행기가 지난 결과로 치운다 */
 function sidecar(dir, lane, body) {
   const f = join(dir, '.claude/runtime/issues', `${SLUG}.lane-${lane}.json`);
   mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify(body));
+  writeFileSync(`${f}.agent`, JSON.stringify(body));
   return f;
 }
 

@@ -75,7 +75,7 @@ function commandsFor(kind, dir) {
   const notes = [];
   if (kind === 'gradle') {
     if (!existsSync(join(dir, 'gradlew')) && !existsSync(join(dir, 'gradlew.bat'))) notes.push('gradle wrapper(gradlew) 없음 — 명령을 gradle 로 바꿔야 할 수 있다');
-    return { cmds: { compile: './gradlew compileJava compileTestJava -q', lint: null, build: './gradlew build -x test', test: './gradlew test' }, notes };
+    return { cmds: { compile: './gradlew compileJava compileTestJava -q', lint: null, build: './gradlew build -x test', test: './gradlew test', dod_tests: { adapter: 'gradle-junit', run: './gradlew test' } }, notes };
   }
   if (kind === 'maven') {
     const mvn = existsSync(join(dir, 'mvnw')) || existsSync(join(dir, 'mvnw.cmd')) ? './mvnw' : 'mvn';
@@ -102,6 +102,7 @@ function commandsFor(kind, dir) {
         lint,
         build: script('build'),
         test: usesVitest ? 'npx vitest run' : script('test'),
+        ...(usesVitest ? { dod_tests: { adapter: 'vitest', run: 'npx vitest run' } } : {}),
       },
       notes,
     };

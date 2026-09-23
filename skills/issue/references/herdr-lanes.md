@@ -15,6 +15,7 @@
    ```
    - `kinds` 는 `harness.json.herdr.kinds.verify`(기본 `["codex"]`). `--kinds codex,grok` 로 이번만 바꿀 수 있다.
    - 레인마다 pane 을 옆에 쪼개고(`pane split --no-focus` — 사용자의 초점은 그대로) 에이전트를 띄운 뒤, 프롬프트 **파일**을 읽으라는 한 줄만 보낸다. 결과는 `<runtime>/issues/<slug>.herdr-<kind>.json` 으로만 받는다.
+   - 그 경로는 라운드마다 같다 — 실행기는 제출 전에 지난 결과를 `<slug>.herdr-<kind>.prev.json` 으로 치우고, 결과 없이 일찍 settled 되면 `herdr.settle_grace_s`(기본 30초) 동안 지켜본 뒤 다시 기다린다. 레인이 `failed` 로 끝난 뒤 pane 이 나중에 결과를 써서 **파일을 직접 읽을 때는** mtime 이 이번 제출 뒤인지와 findings 가 이번 diff 를 인용하는지부터 확인한다(2026-09-23 실측: 지난 라운드 결과를 23초 만에 반환 · 18.4초에 결과 없음으로 끝난 레인이 8분 뒤 결과를 씀).
    - 출력 `{ok, lanes[{name, kind, status, reason?, pane, out, seconds, count}], failed[], findings[{severity, file, line, claim, evidence, axis, lane}], blockers, lanes_reason}`.
 3. **메인이 확정/기각** — Workflow 레인과 같다(finding 마다 한 줄 근거, 반증 에이전트 금지). `status` 가 `failed`·`blocked` 인 레인은 "이번 라운드가 안 본 축" 으로 보고에 남긴다 — 빈 초록으로 적지 않는다.
 4. 기록: `<slug>.review.json` 의 `lanes` 에 **done 레인 수**, `lanes_reason` 에 출력의 `lanes_reason`(다른 모델 심판)을 넣어 `issue-set.mjs --review`. `codex` 필드는 codex-review.sh 결과 그대로(Herdr codex 레인은 별개의 심판이다 — 둘 다 돌았으면 둘 다 적는다).

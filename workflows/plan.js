@@ -138,6 +138,10 @@ const DESIGN_SCHEMA = {
           id: { type: 'string' },
           text: { type: 'string' },
           probe: { type: ['string', 'null'] },
+          tests: {
+            type: ['object', 'null'],
+            properties: { stack: { type: 'string' }, select: { type: 'array', items: { type: 'string' } } },
+          },
           cwd: { type: ['string', 'null'] },
           expect: {
             type: 'object',
@@ -285,8 +289,11 @@ const designPrompt = [
     `  **Herdr 구현 레인이 켜져 있다** — 레인마다 \`kind\` 를 ${herdrKinds.join(' / ')} 중 하나로 고르고 \`kind_reason\` 한 줄(왜 그 kind 인가)을 함께 적는다. 레인은 각자 worktree 에서 그 kind 의 에이전트가 돈다(worktree 는 실행기가 항상 판다 — worktree 플래그와 무관). 고르지 않으면 실행기가 풀 순서대로 기계적으로 배정한다.`,
     `  kind 프로파일(가설 — 레인 기록이 쌓이기 전까지의 기본값. 근거가 얇은 kind 에 핵심 레인을 몰지 않는다): ${herdrKinds.map((k) => `${k} = ${herdrProfiles[k] ?? '(프로파일 없음)'}`).join(' · ')}`,
   ] : []),
-  '- `dod`: [{id, text, probe, cwd, expect, human}]. id 는 D1, D2 …',
-  '  probe 는 **실제로 실행 가능한 셸 명령 한 줄**(테스트·린트·빌드 필터). cwd 는 프로젝트 루트 기준 상대 경로(루트면 null).',
+  '- `dod`: [{id, text, probe, tests, cwd, expect, human}]. id 는 D1, D2 …',
+  '  **테스트를 도는 항목은 `tests: {stack, select[]}` 로 쓴다** — `.claude/harness.json` 의 그 스택에 `dod_tests` 가 있을 때. 게이트가 스택별로 선택을 합쳐 **한 번만** 돌리고 리포트로 항목마다 판정한다(probe 는 null).',
+  '  select 는 gradle-junit 이면 `--tests` **클래스** 패턴(예 `*FeeCalculatorTest*` — 메서드 단위는 판정 못 한다), vitest 면 스택 dir 기준 파일 경로 필터(예 `src/views/settlement/__tests__`). 설계에 적은 테스트 클래스명·파일 경로와 **글자까지 같게** 쓴다.',
+  '  tests 항목의 expect 는 {min_tests} 만 — 실제 기대 건수를 넣는다(없으면 1: "하나라도 돌았다" 뿐이다). pattern·cwd 는 쓰지 않는다. dod_tests 가 없는 스택이면 종전대로 probe 로 쓴다.',
+  '  probe 는 **실제로 실행 가능한 셸 명령 한 줄**(위반 주입·존재 검사·린트·빌드 필터, 또는 dod_tests 없는 스택의 테스트). cwd 는 프로젝트 루트 기준 상대 경로(루트면 null).',
   '  expect 는 {pattern, min_tests}. pattern 은 성공 출력에 반드시 나오는 정규식, min_tests 는 실행 건수 하한이다 —',
   '  **필터가 0건을 실행해도 초록이 되는 사고를 막는 유일한 장치이므로, 테스트를 도는 프로브에는 min_tests 를 1 이상으로 반드시 넣는다.**',
   '  게이트는 건수를 러너 요약 줄(vitest/jest `Tests N passed` · gradle `N tests completed` · JUnit `Tests run: N` · pytest `N passed`)이나 프로브가 직접 찍은 숫자 한 줄에서 읽는다.',
@@ -360,7 +367,7 @@ const scopePrompt = [
   '- 범위 밖으로 선언한 것을 설계가 하고 있다.',
   '- DoD 가 통과 케이스만 있고 거부/실패 케이스가 하나도 없다.',
   '- 테스트를 도는 probe 에 expect.min_tests 가 없다(0건 실행이 초록으로 통과한다). 반대로 건수를 출력하지 않는 sentinel probe 에 min_tests 가 있다(분모 미확인으로 상시 FAIL).',
-  '- probe 의 -t/--tests 필터 문자열이 설계의 테스트 이름과 리터럴로 일치하지 않는다(0건 매치). 위반 주입 probe 의 치환 대상 문자열이 목표 코드에 없다(replace 가 조용한 no-op).',
+  '- probe 의 -t/--tests 필터 문자열이나 tests.select 가 설계의 테스트 이름·파일 경로와 리터럴로 일치하지 않는다(0건 매치). 위반 주입 probe 의 치환 대상 문자열이 목표 코드에 없다(replace 가 조용한 no-op).',
   '- 레인들의 files 가 서로 겹치는데 worktree 가 false 다.',
   'blocker 는 "무엇이 · 왜" 한 줄로 쓴다. 모호한 지적은 notes 로.',
 ].join('\n');

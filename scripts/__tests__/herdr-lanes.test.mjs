@@ -1,7 +1,7 @@
 // herdr-lanes.mjs 실측 — herdr CLI 대역으로 pane split → agent start → 프롬프트 파일 → 제출 확인(nudge) → wait → 결과 파일 회수 순서와 함정 처리를 검사한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -29,7 +29,7 @@ function makeRepo(herdrPatch = {}) {
   g(dir, 'config', 'user.name', 'test');
   for (const d of ['backend', '.claude']) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(join(dir, 'backend/App.java'), 'class App {}\n');
-  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'verify', kinds: { verify: ['codex', 'grok'] }, ...herdrPatch } };
+  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'verify', kinds: { verify: ['codex', 'grok'] }, settle_grace_s: 1, ...herdrPatch } };
   writeFileSync(join(dir, '.claude/harness.json'), JSON.stringify(cfg, null, 2) + '\n');
   g(dir, 'add', '-A');
   g(dir, 'commit', '-q', '-m', 'init');
@@ -38,7 +38,7 @@ function makeRepo(herdrPatch = {}) {
 }
 function spec(dir, laneList, extra = {}) {
   const p = join(dir, 'spec.json');
-  writeFileSync(p, JSON.stringify({ lanes: laneList, ...extra }));
+  writeFileSync(p, JSON.stringify({ lanes: laneList, settle_grace_s: 1, ...extra })); // 결과 없는 레인이 기본 30초를 기다리지 않게
   return p;
 }
 
@@ -56,7 +56,7 @@ test('run: 정상 경로 — split → start(kind_args 기본) → 프롬프트 
   const dir = makeRepo();
   const out = join(dir, '.claude/runtime/lanes/a.json');
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, JSON.stringify({ findings: [{ severity: 'MAJOR', file: 'backend/App.java', line: 1, claim: 'c', evidence: 'e', axis: 'x' }], summary: 's' }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [{ severity: 'MAJOR', file: 'backend/App.java', line: 1, claim: 'c', evidence: 'e', axis: 'x' }], summary: 's' }));
   const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'a', kind: 'codex', prompt: '리뷰해라', out }])], env);
   assert.equal(r.status, 0, r.stderr);
@@ -89,7 +89,7 @@ test('run: 정상 경로 — split → start(kind_args 기본) → 프롬프트 
 test('run: 제출이 안 된 형태(idle 유지 + 화면에 프롬프트 잔존)면 send-keys enter 로 밀어 넣는다(nudged) · close_panes 면 닫는다', () => {
   const dir = makeRepo();
   const out = join(dir, 'b.json');
-  writeFileSync(out, JSON.stringify({ findings: [], summary: 'ok' }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'ok' }));
   // get 순서: 사다리 1 · 제출 전 생존 확인 1 · 제출 뒤 폴링(3번째에서 nudge) — 그 뒤 working
   const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'idle,idle,idle,idle,idle,working,done', FAKE_HERDR_READ: '> Read the file …prompt.md and do exactly what it says' });
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'b', kind: 'grok', prompt: 'x', out }], { close_panes: true })], env);
@@ -104,7 +104,7 @@ test('run: 제출이 안 된 형태(idle 유지 + 화면에 프롬프트 잔존)
 test('run: blocked — teach 다이얼로그면 esc 1회 후 계속, 그 외 승인 UI 면 status blocked 로 보고(자동 응답 없음)', () => {
   const teach = makeRepo();
   const out1 = join(teach, 't.json');
-  writeFileSync(out1, JSON.stringify({ findings: [] }));
+  writeFileSync(`${out1}.agent`, JSON.stringify({ findings: [] }));
   // get 순서: 사다리 1 · 생존 확인 1 · 폴링 1(working) → wait 가 blocked(teach) → esc → wait 가 done
   const a = inside(teach, { FAKE_HERDR_STATES: 'working,working,working,blocked,done', FAKE_HERDR_READ: 'Teach auto mode about your environment? (y/n)' });
   const r1 = lanes(teach, ['run', '--spec', spec(teach, [{ name: 't', kind: 'claude', prompt: 'x', out: out1 }])], a.env);
@@ -125,7 +125,7 @@ test('run: 기동 직후 다이얼로그 사다리 — 업데이트 안내는 Sk
   // (a) update → trust → 정상
   const dir = makeRepo();
   const out = join(dir, 'd.json');
-  writeFileSync(out, JSON.stringify({ findings: [], summary: 'ok' }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'ok' }));
   const a = inside(dir, { FAKE_HERDR_STATES: 'idle,idle,working,done', FAKE_HERDR_READ_SEQ: JSON.stringify(['  1. Update now\n  2. Skip', TRUST, '']) });
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'd', kind: 'codex', prompt: 'x', out }])], a.env);
   const l = r.value.lanes[0];
@@ -163,11 +163,56 @@ test('run: 결과 파일이 없으면 failed(사유에 경로) · .error.txt 가
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'm', kind: 'codex', prompt: 'x', out }])], env);
   assert.equal(r.value.lanes[0].status, 'failed');
   assert.match(r.value.lanes[0].reason, /결과 파일 없음/);
-  writeFileSync(`${out}.error.txt`, '파일 쓰기 권한 없음');
+  writeFileSync(`${out}.error.txt.agent`, '파일 쓰기 권한 없음');
   const r2 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'm2', kind: 'codex', prompt: 'x', out }])], inside(dir, { FAKE_HERDR_STATES: 'working,done' }).env);
   assert.match(r2.value.lanes[0].reason, /레인 보고 오류: 파일 쓰기 권한 없음/);
   const r3 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'Bad Name', kind: 'codex', prompt: 'x', out }])], env);
   assert.match(r3.value.lanes[0].reason, /레인 이름 형식/);
+});
+
+test('run: 지난 라운드 결과는 제출 전에 .prev 로 치운다 — 새로 쓰면 그 결과만 · 안 쓰면 지난 결과를 읽지 않고 failed(2026-09-23 실측: 23초 만에 지난 findings 반환)', () => {
+  const dir = makeRepo();
+  const out = join(dir, '.claude/runtime/issues/s.herdr-claude.json');
+  mkdirSync(dirname(out), { recursive: true });
+  const OLD = { findings: [{ severity: 'MAJOR', file: 'old.java', line: 1, claim: '지난 라운드', evidence: 'e', axis: 'x' }], summary: 'old' };
+  // (a) 지난 결과·오류 + 에이전트가 새로 씀 → 새 결과 · 지난 것은 지우지 않고 .prev 로
+  writeFileSync(out, JSON.stringify(OLD));
+  writeFileSync(`${out}.error.txt`, '지난 라운드 오류');
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'new' }));
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_STATE_FILE: join(dir, 'a.count') });
+  const l1 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 's', kind: 'claude', prompt: 'x', out }])], a.env).value.lanes[0];
+  assert.equal(l1.status, 'done', JSON.stringify(l1));
+  assert.equal(l1.result.summary, 'new');
+  assert.deepEqual(JSON.parse(readFileSync(out.replace(/\.json$/, '.prev.json'), 'utf8')), OLD);
+  assert.equal(readFileSync(out.replace(/\.json$/, '.prev.json.error.txt'), 'utf8'), '지난 라운드 오류');
+  assert.equal(l1.set_aside.length, 2);
+  // (b) 지난 결과만 있고 에이전트는 아무것도 안 씀 → failed · 지난 findings 를 결과로 내지 않는다
+  rmSync(`${out}.agent`);
+  writeFileSync(out, JSON.stringify(OLD));
+  const b = inside(dir, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_STATE_FILE: join(dir, 'b.count') });
+  const l2 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 's2', kind: 'claude', prompt: 'x', out }])], b.env).value.lanes[0];
+  assert.equal(l2.status, 'failed', JSON.stringify(l2));
+  assert.match(l2.reason, /결과 파일 없음/);
+  assert.equal(l2.result, undefined);
+});
+
+test('run: 결과 없이 일찍 settled 돼도(제출 직후 idle) 곧바로 실패로 읽지 않는다 — 지켜보다 working 이 되면 다시 기다려 결과를 읽는다(rewaits) · 끝내 안 움직이면 failed(2026-09-23 실측: 18.4초에 "결과 파일 없음", 결과는 8분 뒤)', () => {
+  const dir = makeRepo();
+  const out = join(dir, 'e.json');
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'late' }));
+  // 상태 조회 순서: 사다리 0(working) · 생존 확인 1 · 제출 뒤 폴링 2(working) · wait 3(idle — 결과 없음) · 지켜보기 4(working) · wait 5(done — 이때 결과가 생긴다)
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working,working,working,idle,working,done', FAKE_HERDR_WRITE_AT: '5' });
+  const l = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'e', kind: 'claude', prompt: 'x', out }])], a.env).value.lanes[0];
+  assert.equal(l.status, 'done', JSON.stringify(l));
+  assert.equal(l.result.summary, 'late');
+  assert.equal(l.rewaits, 1);
+  // 끝내 안 움직이면(idle 유지 · 결과 없음) 지켜보기 뒤 failed
+  const d2 = makeRepo();
+  const b = inside(d2, { FAKE_HERDR_STATES: 'working,working,working,idle' });
+  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'e2', kind: 'claude', prompt: 'x', out: join(d2, 'e2.json') }])], b.env).value.lanes[0];
+  assert.equal(l2.status, 'failed', JSON.stringify(l2));
+  assert.match(l2.reason, /결과 파일 없음/);
+  assert.equal(l2.rewaits, undefined);
 });
 
 test('verify: herdr.lanes=off 면 실행 없이 ok:false · plan 은 kinds 만큼 레인 spec(프롬프트에 diff-ref·파일·규약) · verify 는 findings 를 verify.js 모양으로 합치고 lanes_reason 을 낸다', () => {
@@ -183,10 +228,10 @@ test('verify: herdr.lanes=off 면 실행 없이 ok:false · plan 은 kinds 만�
   assert.match(plan.value.lanes[0].prompt, /backend\/App\.java/);
   assert.match(plan.value.lanes[0].prompt, /보안/);
   assert.match(plan.value.lanes[0].out, /feat-ABC-5\.herdr-codex\.json$/);
-  // 실행 — codex 레인은 결과를 미리 써 두고, grok 레인은 결과 없음(failed) → ok:true(1개 완주) · failed 에 grok
+  // 실행 — codex 레인은 제출 뒤 결과를 쓰고(대역 .agent), grok 레인은 결과 없음(failed) → ok:true(1개 완주) · failed 에 grok
   const outCodex = join(dir, '.claude/runtime/issues/feat-ABC-5.herdr-codex.json');
   mkdirSync(dirname(outCodex), { recursive: true });
-  writeFileSync(outCodex, JSON.stringify({ findings: [{ severity: 'blocker', file: 'backend\\App.java', line: '3', claim: 'NPE', evidence: 'x', axis: '정확성' }], summary: '1건' }));
+  writeFileSync(`${outCodex}.agent`, JSON.stringify({ findings: [{ severity: 'blocker', file: 'backend\\App.java', line: '3', claim: 'NPE', evidence: 'x', axis: '정확성' }], summary: '1건' }));
   const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'working,done,working,done' });
   const v = lanes(dir, ['verify', '--diff-ref', 'main...HEAD', '--files', 'backend/App.java', '--slug', 'feat-ABC-5'], env);
   assert.equal(v.status, 0, v.stderr);

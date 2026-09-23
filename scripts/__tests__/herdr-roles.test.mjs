@@ -30,20 +30,20 @@ function makeRepo(patch = {}) {
   g(dir, 'config', 'user.name', 'test');
   for (const d of ['backend', '.claude']) mkdirSync(join(dir, d), { recursive: true });
   writeFileSync(join(dir, 'backend/App.java'), 'class App {}\n');
-  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'verify' }, ...patch };
+  const cfg = { ...JSON.parse(readFileSync(join(HERE, 'fixtures/harness.json'), 'utf8')), herdr: { lanes: 'verify', settle_grace_s: 1 }, ...patch };
   writeFileSync(join(dir, '.claude/harness.json'), JSON.stringify(cfg, null, 2) + '\n');
   g(dir, 'add', '-A');
   g(dir, 'commit', '-q', '-m', 'init');
   g(dir, 'checkout', '-q', '-b', 'feat/ABC-5');
   return dir;
 }
-function spec(dir, laneList, extra = {}) { const p = join(dir, 'spec.json'); writeFileSync(p, JSON.stringify({ lanes: laneList, ...extra })); return p; }
+function spec(dir, laneList, extra = {}) { const p = join(dir, 'spec.json'); writeFileSync(p, JSON.stringify({ lanes: laneList, settle_grace_s: 1, ...extra })); return p; } // 결과 없는 레인이 기본 30초를 기다리지 않게
 function agentsJson(list) { return JSON.stringify(list); }
 
 test('reviewer 재사용: 같은 이름의 idle 에이전트면 split/start 없이 그 pane · fresh 면 /new · 재사용 pane 은 닫지 않는다', () => {
   const dir = makeRepo();
   const out = join(dir, 'r.json');
-  writeFileSync(out, JSON.stringify({ findings: [] }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [] }));
   const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_AGENTS: agentsJson([{ name: 'review-codex', agent: 'codex', agent_status: 'idle', pane_id: 'w1:p4', cwd: dir }]) });
   const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'review-codex', kind: 'codex', prompt: 'x', out, reuse: true, fresh: true }], { close_panes: true })], env);
   const l = r.value.lanes[0];
@@ -59,7 +59,7 @@ test('reviewer 재사용: 같은 이름의 idle 에이전트면 split/start 없�
 test('reviewer 재사용: kind·cwd 로 찾으면 이름을 맞춘다(rename) · working 이면 busy · 다른 cwd 의 idle 은 재사용하지 않는다', () => {
   const dir2 = makeRepo();
   const out2 = join(dir2, 'r2.json');
-  writeFileSync(out2, JSON.stringify({ findings: [] }));
+  writeFileSync(`${out2}.agent`, JSON.stringify({ findings: [] }));
   const b = inside(dir2, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_AGENTS: agentsJson([{ name: 'old', agent: 'codex', agent_status: 'done', pane_id: 'w1:p5', cwd: dir2 }]) });
   const r2 = lanes(dir2, ['run', '--spec', spec(dir2, [{ name: 'review-codex', kind: 'codex', prompt: 'x', out: out2 }])], b.env);
   assert.equal(r2.value.lanes[0].reused, true, JSON.stringify(r2.value));
@@ -69,7 +69,7 @@ test('reviewer 재사용: kind·cwd 로 찾으면 이름을 맞춘다(rename) ·
   const r3 = lanes(dir3, ['run', '--spec', spec(dir3, [{ name: 'review-codex', kind: 'codex', prompt: 'x', out: join(dir3, 'x.json') }])], c3.env);
   assert.equal(r3.value.lanes[0].status, 'busy');
   const dir4 = makeRepo();
-  writeFileSync(join(dir4, 'y.json'), '{"findings":[]}');
+  writeFileSync(join(dir4, 'y.json.agent'), '{"findings":[]}');
   const d4 = inside(dir4, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_AGENTS: agentsJson([{ name: 'other', agent: 'codex', agent_status: 'idle', pane_id: 'w1:p6', cwd: 'C:/elsewhere' }]) });
   const r4 = lanes(dir4, ['run', '--spec', spec(dir4, [{ name: 'review-codex', kind: 'codex', prompt: 'x', out: join(dir4, 'y.json') }])], d4.env);
   assert.equal(r4.value.lanes[0].reused, false);
@@ -85,7 +85,7 @@ test('codex-review: Herdr 밖·codex_via=exec 면 status:missing(exec 폴백) ·
   assert.match(lastLine(outside.stdout), /"status":"missing".*outside herdr/);
   const out = join(dir, '.claude/runtime/issues/feat-ABC-5.herdr-codex.json');
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, JSON.stringify({ findings: [{ severity: 'BLOCKER', file: 'a.js', line: 1, claim: 'c', evidence: 'e', axis: 'x' }], summary: 's' }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [{ severity: 'BLOCKER', file: 'a.js', line: 1, claim: 'c', evidence: 'e', axis: 'x' }], summary: 's' }));
   const a = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
   const r1 = lanes(dir, ['codex-review', '--slug', 'feat-ABC-5', '--files', 'a.js'], a.env);
   assert.equal(r1.status, 0, r1.stderr);
@@ -100,7 +100,7 @@ test('codex-review: Herdr 밖·codex_via=exec 면 status:missing(exec 폴백) ·
   assert.match(lastLine(r2.stdout), /"status":"ok"/);
   assert.ok(!calls(b.log).some(x => x[1] === 'prompt' && x[3] === '/new'), '같은 이슈면 컨텍스트 유지');
   assert.ok(calls(b.log).some(x => x[1] === 'rename') === false && !calls(b.log).some(x => x[1] === 'split'), '재사용');
-  writeFileSync(join(dir, '.claude/runtime/issues/feat-ABC-6.herdr-codex.json'), JSON.stringify({ status: 'limit', summary: 'usage limit' }));
+  writeFileSync(join(dir, '.claude/runtime/issues/feat-ABC-6.herdr-codex.json.agent'), JSON.stringify({ status: 'limit', summary: 'usage limit' }));
   const cEnv = inside(dir, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_AGENTS: agents });
   const r3 = lanes(dir, ['codex-review', '--slug', 'feat-ABC-6'], cEnv.env);
   assert.ok(calls(cEnv.log).some(x => x[1] === 'prompt' && x[3] === '/new'), '이슈가 바뀌면 /new');
@@ -113,7 +113,7 @@ test('codex-review: review.codex_model·codex_effort 는 상주 reviewer 를 새
   const dir = makeRepo({ review: { codex: true, codex_via: 'herdr', codex_model: 'gpt-6-sol', codex_effort: 'xhigh' } });
   const out = join(dir, '.claude/runtime/issues/feat-ABC-5.herdr-codex.json');
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, JSON.stringify({ findings: [], summary: 's' }));
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 's' }));
   const a = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
   const r = lanes(dir, ['codex-review', '--slug', 'feat-ABC-5', '--files', 'a.js'], a.env);
   assert.match(lastLine(r.stdout), /^CODEX_RESULT=\{"status":"ok"/, r.stderr);

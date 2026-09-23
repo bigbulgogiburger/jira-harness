@@ -79,12 +79,14 @@ test('detect: 모노레포 루트+1단계 하위에서 gradle·npm 스택을 찾
   assert.equal(stacks.backend.build, './gradlew build -x test');
   assert.equal(stacks.backend.test, './gradlew test');
   assert.equal(stacks.backend.lint, null, 'gradle lint 는 추측하지 않는다');
+  assert.deepEqual(stacks.backend.dod_tests, { adapter: 'gradle-junit', run: './gradlew test' }, 'DoD tests 항목을 한 번에 돌리는 어댑터');
 
   assert.equal(stacks.frontend.dir, 'frontend');
   assert.equal(stacks.frontend.lint, 'npm run lint');
   assert.equal(stacks.frontend.build, 'npm run build');
   assert.equal(stacks.frontend.test, 'npx vitest run', 'vitest 는 npm run test 가 아니라 직접 실행');
   assert.equal(stacks.frontend.compile, null, 'typecheck 스크립트가 없으면 compile 은 비운다');
+  assert.deepEqual(stacks.frontend.dod_tests, { adapter: 'vitest', run: 'npx vitest run' });
 
   assert.equal(suggested.version, 3);
   assert.equal(suggested.mode, 'auto');

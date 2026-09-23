@@ -44,7 +44,16 @@
         "properties": {
           "id": { "type": "string" },
           "text": { "type": "string" },
-          "probe": { "type": ["string", "null"], "description": "셸 명령. null 이면 human 항목" },
+          "probe": { "type": ["string", "null"], "description": "셸 명령. probe·tests 가 둘 다 없으면 human 항목" },
+          "tests": {
+            "type": "object",
+            "required": ["stack", "select"],
+            "description": "구조화 테스트 선택 — 게이트가 스택별로 한 번에 돌리고 리포트로 항목마다 판정한다(harness.json stacks.<stack>.dod_tests). 판정: 걸린 것 1건 이상 · 실패 0 · 통과 ≥ expect.min_tests(없으면 1). 이 항목은 cwd·expect.pattern 을 쓰지 않는다",
+            "properties": {
+              "stack": { "type": "string", "description": "harness.json stacks 의 이름" },
+              "select": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "gradle-junit: --tests 클래스 패턴(* 와일드카드) · vitest: 파일 경로 필터(스택 dir 기준 부분 문자열)" }
+            }
+          },
           "cwd": { "type": ["string", "null"], "description": "프로젝트 루트 기준 상대 경로" },
           "expect": {
             "type": "object",

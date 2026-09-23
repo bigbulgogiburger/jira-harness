@@ -52,7 +52,7 @@ node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
 | `skills/grilling` `grill-me` `jira-create` `kb-ingest` | 결정 인터뷰 · 이슈 생성 · 지식 wiki ingest |
 | `workflows/plan.js` `implement.js` `verify.js` `recon.js` | Workflow 툴로 도는 다중 에이전트 단계(모든 레인에 model 명시) |
 | `hooks/hooks.json` → `scripts/commit-gate.mjs` | PreToolUse(Bash) 훅 — 게이트·리뷰 기록이 커밋될 트리와 같을 때만 commit/push 허용 |
-| `scripts/gate.mjs` | 경량(컴파일·린트·DoD) / 전량(빌드·테스트·extra) 게이트 러너 — 트리 id 와 로그 sha256 을 기록 |
+| `scripts/gate.mjs` | 경량(컴파일·린트·DoD) / 전량(빌드·테스트·extra) 게이트 러너 — DoD `tests` 항목은 스택별 1회 배치(`stacks.<name>.dod_tests`, 전량은 test 리포트를 재사용) · 트리 id 와 로그 sha256 을 기록 |
 | `scripts/issue-start.mjs` `issue-set.mjs` `issue-complete.mjs` | 브랜치·상태 JSON 생명주기 |
 | `scripts/safe-commit.mjs` | 훅이 발화하지 않는 경로(헤드리스·무인)에서 같은 판정 후 커밋 |
 | `scripts/codex-review.sh` | Codex CLI 리뷰 래퍼(본문 끝으로 판정, 한도 소진을 감추지 않음) |

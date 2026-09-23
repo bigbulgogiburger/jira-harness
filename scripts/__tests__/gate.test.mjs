@@ -1,7 +1,7 @@
 // S2 통합 테스트 — 실제 임시 git 저장소에서 훅(commit-gate.mjs)과 러너(gate.mjs)를 실행한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -253,6 +253,139 @@ test('DoD 프로브: 러너 색상 코드(ANSI)가 낀 요약 줄도 건수·pat
   writeState(stateFile(dir), s);
   assert.equal(gate(dir, '--commit').status, 1, 'sentinel pattern 없음 → FAIL');
   assert.equal(readState(stateFile(dir)).dod[1].last, 'FAIL');
+});
+
+// DoD tests 항목 — 가짜 러너(fixtures/fake-runner.mjs)를 dod_tests.run 으로 건다. 러너 설정은 스택 dir 의 .fake-runner.json, 호출 기록은 .fake-runner.log
+const FAKE_RUNNER = `node '${join(HERE, 'fixtures/fake-runner.mjs').replace(/\\/g, '/')}'`;
+function dodTestsRepo({ full = false, suites, files }) {
+  const dir = makeRepo();
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  cfg.stacks.be.dod_tests = { adapter: 'gradle-junit', run: `${FAKE_RUNNER} gradle` };
+  cfg.stacks.fe.dod_tests = { adapter: 'vitest', run: `${FAKE_RUNNER} vitest` };
+  if (full) { cfg.stacks.be.test = cfg.stacks.be.dod_tests.run; cfg.stacks.fe.test = cfg.stacks.fe.dod_tests.run; }
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  writeFileSync(join(dir, 'backend/.fake-runner.json'), JSON.stringify({ suites }));
+  writeFileSync(join(dir, 'frontend/.fake-runner.json'), JSON.stringify({ files }));
+  appendFileSync(join(dir, '.gitignore'), '.fake-runner.log\nbuild/\n.claude/runtime/\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'dod_tests');
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  return dir;
+}
+const runnerCalls = (dir, stack) => readFileSync(join(dir, stack, '.fake-runner.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+function setDod(dir, dod) { const st = readState(stateFile(dir)); st.dod = dod; writeState(stateFile(dir), st); }
+function setRunner(dir, stack, patch) { const f = join(dir, stack, '.fake-runner.json'); writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), ...patch })); }
+
+test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고(선택 합집합) 리포트로 항목마다 판정한다 — 분모 0·실패·하한 미달은 그 항목만 FAIL · 컴파일 실패면 지난 XML 을 믿지 않는다', () => {
+  const dir = dodTestsRepo({
+    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }, { name: 'com.x.OtherTest', tests: 9 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/a/y.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
+  });
+  const dod = [
+    { id: 'D1', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'D2', text: '주문(중첩 클래스 포함)', tests: { stack: 'be', select: ['*OrderTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'D3', text: '화면 a', tests: { stack: 'fe', select: ['src/a'] }, expect: { min_tests: 4 }, last: 'PENDING' },
+    { id: 'D4', text: 'sentinel 은 종전대로', probe: 'echo INJECTION_FIRED', cwd: 'backend', expect: { pattern: 'INJECTION_FIRED' }, last: 'PENDING' },
+  ];
+  setDod(dir, dod);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const r = gate(dir, '--commit');
+  assert.equal(r.status, 0, r.stderr);
+  let s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'PASS', 'PASS']);
+  assert.equal(s.gate.dod, '4/4');
+  assert.deepEqual(runnerCalls(dir, 'backend'), [['gradle', '--tests', '*FeeTest*', '--tests', '*OrderTest*']], 'be 러너는 한 번 — 선택 합집합');
+  const fe = runnerCalls(dir, 'frontend');
+  assert.equal(fe.length, 1, 'fe 러너도 한 번');
+  assert.ok(fe[0].includes('src/a') && fe[0].some(a => a.startsWith('--outputFile.json=')), JSON.stringify(fe[0]));
+
+  // 위반 주입 ① 어디에도 안 걸리는 선택 → 그 항목만 FAIL(분모 0) · 러너는 여전히 스택당 한 번
+  setDod(dir, [...dod, { id: 'D5', text: '없는 클래스', tests: { stack: 'be', select: ['*MissingTest*'] }, last: 'PENDING' }]);
+  assert.equal(gate(dir, '--commit').status, 1);
+  s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'PASS', 'PASS', 'FAIL']);
+  assert.equal(runnerCalls(dir, 'backend').length, 2);
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D5 \[be 배치\].*분모 0/);
+
+  // 위반 주입 ② 한 스위트 실패 → 그 항목만 FAIL(배치 exit 1 이어도 다른 항목은 이번 실행 결과로 PASS)
+  setDod(dir, dod);
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
+  assert.equal(gate(dir, '--commit').status, 1);
+  s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['FAIL', 'PASS', 'PASS', 'PASS']);
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*실패 1건: com\.x\.FeeTest/);
+
+  // 위반 주입 ③ 통과 건수가 하한 미달 → FAIL
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
+  setDod(dir, dod.map(d => (d.id === 'D3' ? { ...d, expect: { min_tests: 5 } } : d)));
+  assert.equal(gate(dir, '--commit').status, 1);
+  s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'FAIL', 'PASS']);
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D3 \[fe 배치\].*통과 4건 < 5/);
+
+  // 위반 주입 ④ 컴파일 실패(러너가 아무것도 안 쓰고 exit 1) — 지난 실행의 XML 이 통과로 남아 있어도 믿지 않는다
+  setDod(dir, dod);
+  const xmlDir = join(dir, 'backend/build/test-results/test');
+  const old = new Date(Date.now() - 3600_000);
+  for (const f of readdirSync(xmlDir)) utimesSync(join(xmlDir, f), old, old);
+  setRunner(dir, 'backend', { compile_error: true });
+  assert.equal(gate(dir, '--commit').status, 1);
+  s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['FAIL', 'FAIL', 'PASS', 'PASS'], '지난 XML(통과)을 이번 결과로 읽지 않는다');
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*배치 exit 1 — 이번 실행 결과 없음/);
+});
+
+test('DoD tests 전량: 스택 test 명령이 dod_tests.run 과 같으면 그 리포트로 판정하고 다시 돌리지 않는다 · 리포트에 안 걸린 항목(기본 test 밖)만 배치 · vitest 는 test 단계에 JSON 리포터가 붙는다', () => {
+  const dir = dodTestsRepo({
+    full: true,
+    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.SlowIT', tests: 2, default: false }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
+  });
+  setDod(dir, [
+    { id: 'D1', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'D2', text: '기본 test 밖(IT)', tests: { stack: 'be', select: ['*SlowIT*'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+    { id: 'D3', text: '화면 a', tests: { stack: 'fe', select: ['src/a'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+  ]);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const r = gate(dir, '--full');
+  assert.equal(r.status, 0, r.stderr);
+  const s = readState(stateFile(dir));
+  assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'PASS']);
+  assert.equal(s.gate.results.test, 'PASS');
+  assert.deepEqual(runnerCalls(dir, 'backend'), [['gradle'], ['gradle', '--tests', '*SlowIT*']], 'test 단계 1번 + 리포트에 안 걸린 D2 만 배치');
+  const fe = runnerCalls(dir, 'frontend');
+  assert.equal(fe.length, 1, 'fe 는 test 단계 한 번뿐 — DoD 배치 없음');
+  assert.ok(fe[0].some(a => a.startsWith('--outputFile.json=')), 'test 단계에 JSON 리포터가 붙는다');
+  const log = readFileSync(join(dir, s.gate.log), 'utf8');
+  assert.match(log, /dod D1 \[be 전량 test 리포트\] .* → PASS/);
+  assert.match(log, /dod D2 \[be 배치\] .* → PASS/);
+  assert.match(log, /dod D3 \[fe 전량 test 리포트\] .* → PASS/);
+});
+
+test('게이트 도중 다른 경로가 쓴 상태(리뷰 기록)를 게이트 종료가 덮어쓰지 않는다 — 쓰기 직전에 다시 읽고 gate·history·DoD 판정만 얹는다', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  // 게이트가 도는 사이 issue-set --review 가 기록하는 것을 흉내 — DoD 프로브가 상태 파일의 review 를 쓴다
+  writeFileSync(join(dir, 'backend/write-review.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';
+const f = '../.claude/runtime/issues/feat-ABC-1.json';
+const s = JSON.parse(readFileSync(f, 'utf8'));
+s.review = { tree: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', files: [], codex: 'skipped', lanes: 1, findings: 0, blockers_open: 0, round: 7, delta_passes: 2, at: '2026-09-23T05:15:43.000Z' };
+writeFileSync(f, JSON.stringify(s, null, 2));
+console.log('REVIEW_WRITTEN');
+`);
+  const st = readState(stateFile(dir));
+  st.dod = [{ id: 'D1', text: '게이트 도중 리뷰 기록', probe: 'node write-review.mjs', cwd: 'backend', expect: { pattern: 'REVIEW_WRITTEN' }, last: 'PENDING' }];
+  writeState(stateFile(dir), st);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  assert.equal(gate(dir, '--commit').status, 0);
+  const s = readState(stateFile(dir));
+  assert.equal(s.review?.round, 7, '게이트가 시작 때 읽은 사본으로 리뷰 기록을 덮어썼다');
+  assert.equal(s.review.delta_passes, 2);
+  assert.equal(s.gate.level, 'commit');
+  assert.equal(s.dod[0].last, 'PASS', 'DoD 판정은 얹힌다');
+  assert.ok(s.history.some(h => h.stage === 'gate'));
 });
 
 test('스택 명령 실패 주입 → compile FAIL 기록 + hook GATE_FAIL · dry-run 은 기록하지 않는다', () => {
