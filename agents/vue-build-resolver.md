@@ -64,7 +64,7 @@ fix: 프로젝트의 전역 로그 함수 사용 또는 프로젝트가 허용�
 원인: 프로젝트가 구버전에 고정
 fix: 즉시 업그레이드가 아니라 alert 만 — 마이그레이션은 별도 계획으로 검토
 
-### S10. Playwright 가 BE 응답 없음
+### S10. e2e(브라우저)가 BE 응답 없음
 원인: dev 서버(FE) + BE 병행 기동 필요
 fix:
 ```bash
@@ -72,7 +72,8 @@ fix:
 cd <be-dir> && ./gradlew.bat bootRun --args="--spring.profiles.active=local"
 # 다른 터미널
 cd <fe-dir> && npm run serve
-# 세 번째
+# 세 번째 — e2e 실행: aside browser(없으면 egolite)로 시나리오를 돌린다.
+# 둘 다 없을 때만 프로젝트의 e2e 스크립트(Playwright)를 쓴다.
 npm run test:e2e
 ```
 
