@@ -1,6 +1,6 @@
-# 위반 주입 4종 + 헤드리스/worktree 실효 확인
+# 위반 주입 5종 + 헤드리스/worktree 실효 확인
 
-`setup.mjs inject` 는 **임시 clone**(원본 프로젝트를 건드리지 않는다)에서 아래 4케이스를 실행하고 `{case, expected, got, ok}` 로 보고한다. "게이트가 심겨 있다"는 사실만으로 "게이트가 작동한다"를 증명하지 않는다 — 이 페이지의 목적은 그 증명이다.
+`setup.mjs inject` 는 **임시 clone**(원본 프로젝트를 건드리지 않는다)에서 아래 5케이스를 실행하고 `{case, expected, got, ok}` 로 보고한다. "게이트가 심겨 있다"는 사실만으로 "게이트가 작동한다"를 증명하지 않는다 — 이 페이지의 목적은 그 증명이다.
 
 ## 케이스 정의
 
@@ -8,10 +8,11 @@
 |------|------|----------|------|
 | `branch-pattern` | 패턴 밖 브랜치(상태 JSON 없음)에서 코드 파일을 커밋 | exit ≠ 0, 사유 코드 `BRANCH_PATTERN` | 통과하거나 다른 코드면 `ok:false`(패턴이 너무 넓거나 docs_only 가 코드를 삼킨다) |
 | `commit-without-gate` | 상태 JSON 은 만들되 `gate.mjs` 를 돌리지 않고 `git commit --allow-empty -m probe` | exit ≠ 0, stderr 에 `[jira-harness] git commit:` 로 시작하는 deny 사유 코드(`NO_GATE`/`DIRTY_TREE`/`NO_STATE` 등 — 실제로 막힌 코드를 그대로 기록) | deny 계열이 아니면 `ok:false` |
+| `powershell-commit-without-gate` | 위와 같은 상태에서 훅 이벤트의 `tool_name` 만 `PowerShell` 로 바꿔 같은 커밋 | 위와 같은 deny 사유 코드 | 통과하면 `ok:false` — 셸 툴 한쪽만 보는 훅은 다른 셸로 그냥 뚫린다. 훅 matcher 와 gate-core 의 `SHELL_TOOLS` 가 같은 집합이어야 한다 |
 | `commit-after-gate` | `gate.mjs --commit` 실행 후 같은 커밋 재시도 | exit = 0, 커밋 생성됨 | 여전히 막히면 `ok:false`(게이트를 통과해도 훅이 풀리지 않는 사고) |
 | `push-without-full-gate` | 경량 게이트만 통과한 상태에서 `git push` | exit ≠ 0, stderr 에 `[jira-harness] git push:` 로 시작하는 사유 코드(`GATE_LEVEL`/`GATE_STALE` 등) | 통과해버리면 `ok:false` |
 
-4케이스 중 하나라도 `ok:false` 면 설치 자체를 실패로 본다 — `write` 로 되돌아가 harness.json 값(특히 `branch_pattern`·`docs_only_paths`)을 재점검한다.
+5케이스 중 하나라도 `ok:false` 면 설치 자체를 실패로 본다 — `write` 로 되돌아가 harness.json 값(특히 `branch_pattern`·`docs_only_paths`)을 재점검한다.
 
 ## 헤드리스 실효 확인 (`codex exec`)
 

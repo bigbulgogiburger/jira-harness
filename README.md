@@ -51,7 +51,7 @@ node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
 | `skills/setup` | 프로젝트 설정·전제 점검·v2 잔재 이관·위반 주입 |
 | `skills/grilling` `grill-me` `jira-create` `kb-ingest` | 결정 인터뷰 · 이슈 생성 · 지식 wiki ingest |
 | `workflows/plan.js` `implement.js` `verify.js` `recon.js` | Workflow 툴로 도는 다중 에이전트 단계(모든 레인에 model 명시) |
-| `hooks/hooks.json` → `scripts/commit-gate.mjs` | PreToolUse(Bash) 훅 — 게이트·리뷰 기록이 커밋될 트리와 같을 때만 commit/push 허용 |
+| `hooks/hooks.json` → `scripts/commit-gate.mjs` | PreToolUse(Bash\|PowerShell) 훅 — 게이트·리뷰 기록이 커밋될 트리와 같을 때만 commit/push 허용. `git commit … && git push` 처럼 한 명령에 둘이 있으면 둘 다 판정한다 |
 | `scripts/gate.mjs` | 경량(컴파일·린트·DoD) / 전량(빌드·테스트·extra) 게이트 러너 — DoD `tests` 항목은 스택별 1회 배치(`stacks.<name>.dod_tests`, 전량은 test 리포트를 재사용) · 트리 id 와 로그 sha256 을 기록 |
 | `scripts/issue-start.mjs` `issue-set.mjs` `issue-complete.mjs` | 브랜치·상태 JSON 생명주기 |
 | `scripts/safe-commit.mjs` | 훅이 발화하지 않는 경로(헤드리스·무인)에서 같은 판정 후 커밋 |

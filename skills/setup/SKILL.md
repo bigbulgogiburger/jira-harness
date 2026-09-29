@@ -3,7 +3,7 @@ name: setup
 description: >-
   프로젝트에 jira-harness v3 를 설치·점검·업그레이드하는 스킬 — 스택 자동 감지 →
   harness.json 작성(멱등) → 마켓플레이스/플러그인 등록 → 전제 체크리스트 →
-  위반 주입 4종으로 게이트가 실제로 작동하는지 실측 확인까지 한 번에 진행한다.
+  위반 주입 5종으로 게이트가 실제로 작동하는지 실측 확인까지 한 번에 진행한다.
   사용자가 "하네스 설치", "하네스 설정", "하네스 셋업", "이 프로젝트에 jira-harness
   붙여줘", "게이트 설정해줘", "harness.json 만들어줘", "v2 에서 올려줘", "업그레이드
   해줘", "harness 점검", "harness check" 라고 하면 **반드시** 이 스킬을 쓴다.
@@ -69,13 +69,13 @@ node "<P>/scripts/setup.mjs" check --json
 
 항목별 `{id, ok, detail, failClosedStage}` — node·git·Git Bash(win32)·codex CLI·harness.json 스키마 유효성·`gate.mjs --commit --dry-run`·`gate.mjs --full --dry-run`. **`ok:false` 여도 설치를 막지 않는다** — 그 항목이 물고 있는 단계를 "fail-closed" 로 그대로 보고한다(예: codex CLI 없음 → verify 단계는 codex 를 건너뛰고 sonnet 폴백만 뜬다는 사실을 미리 알린다).
 
-## 4. inject — 위반 주입 4종
+## 4. inject — 위반 주입 5종
 
 ```bash
 node "<P>/scripts/setup.mjs" inject --json
 ```
 
-`{cases[{case, expected, got, ok}]}`. **한 케이스라도 `ok:false` 면 설치 실패로 보고한다.** 4종의 정의·기대 출력은 [references/injection.md](references/injection.md).
+`{cases[{case, expected, got, ok}]}`. **한 케이스라도 `ok:false` 면 설치 실패로 보고한다.** 5종의 정의·기대 출력은 [references/injection.md](references/injection.md).
 
 ## 5. 헤드리스 실효 확인
 
@@ -95,7 +95,7 @@ node "<P>/scripts/setup.mjs" inject --json
 ## References
 
 - [references/stack-defaults.md](references/stack-defaults.md) — 스택별 기본 게이트 명령 + 흔한 보정
-- [references/injection.md](references/injection.md) — 위반 주입 4종 + 헤드리스/worktree 확인 절차
+- [references/injection.md](references/injection.md) — 위반 주입 5종 + 헤드리스/worktree 확인 절차
 - [references/upgrade.md](references/upgrade.md) — v2 → v3 매핑표
 - [references/herdr.md](references/herdr.md) — Herdr 연동(사이드바 토큰·사람 게이트 알림·Herdr 플러그인 설치·리뷰 레인 실행기). `herdr` 가 PATH 에 있으면 check 단계에서 §5 전제를 함께 점검하고, 설정 스니펫은 **사용자에게 보여만 준다**(config.toml 은 사용자가 고친다)
 
