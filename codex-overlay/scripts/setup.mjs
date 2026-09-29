@@ -599,9 +599,9 @@ function probeFile(cfg) {
   return null;
 }
 
-function runHook(dir, op = 'commit') {
+function runHook(dir, op = 'commit', toolName = 'Bash') {
   const command = op === 'push' ? 'git push -u origin HEAD' : 'git commit -m probe';
-  const event = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: dir });
+  const event = JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd: dir });
   const r = run(NODE, [join(HERE, 'commit-gate.mjs')], { cwd: dir, input: event });
   const out = r.out.trim();
   let decision = 'pass', reason = r.err.trim();
@@ -648,6 +648,10 @@ function cmdInject() {
       writeState(sPath, newState(branch, [`${cfg.issue_prefix}-1`]));
       const b = runHook(clone.dir);
       record('commit-without-gate', 'NO_GATE', b.code, { decision: b.decision });
+
+      // (b') 같은 상태에서 PowerShell 툴로 커밋 → 같은 NO_GATE deny. 한 셸만 보는 훅은 다른 셸로 그냥 뚫린다(존재 ≠ 실효)
+      const bp = runHook(clone.dir, 'commit', 'PowerShell');
+      record('powershell-commit-without-gate', 'NO_GATE', bp.code, { decision: bp.decision });
 
       // (c) gate.mjs --commit 실행 후 → 통과(OK). 프로젝트 게이트 명령이 실제로 실패하면 GATE_FAIL 이 나온다.
       const g = run(NODE, [join(HERE, 'gate.mjs'), '--commit', '--json', '--cwd', clone.dir], { cwd: clone.dir });

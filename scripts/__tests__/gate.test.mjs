@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { newState, writeState, readState } from '../lib/config.mjs';
-import { detectGitOp, effectiveCwd } from '../lib/gate-core.mjs';
+import { detectGitOp, detectGitOps, effectiveCwd, SHELL_TOOLS } from '../lib/gate-core.mjs';
 import { parseTestCount } from '../lib/probe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,8 +38,8 @@ function makeRepo({ mode = 'auto', harness = true, defaultBranchPolicy = null } 
   g(dir, 'commit', '-q', '-m', 'init');
   return dir;
 }
-function hook(dir, command, cwd = dir) {
-  const r = sh(NODE, [join(SCRIPTS, 'commit-gate.mjs')], cwd, JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }));
+function hook(dir, command, cwd = dir, toolName = 'Bash') {
+  const r = sh(NODE, [join(SCRIPTS, 'commit-gate.mjs')], cwd, JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd }));
   assert.equal(r.status, 0, `훅 프로세스는 항상 exit 0: ${r.stderr}`);
   const out = r.stdout.trim();
   if (!out) return { decision: 'pass', reason: r.stderr.trim() };
@@ -80,6 +80,103 @@ test('감지: git commit/push 만, -C·cd 접두, 비-git 명령 무시', () => 
   assert.equal(parseTestCount('Tests  7 passed (7)'), 7);
   assert.equal(parseTestCount('tests=3'), 3);
   assert.equal(parseTestCount('BUILD SUCCESSFUL'), null);
+});
+
+test('감지(복합): 명령 안의 모든 git op 를 등장 순서로 · push 앞에 commit 이 있으면 afterCommit · 같은 (op, afterCommit) 는 한 번', () => {
+  const C = { op: 'commit', afterCommit: false };
+  assert.deepEqual(detectGitOps('git commit -m x'), [C]);
+  assert.deepEqual(detectGitOps('git commit -m x && git push'), [C, { op: 'push', afterCommit: true }]);
+  assert.deepEqual(detectGitOps('git add -A; git commit -m x; git push origin HEAD'), [C, { op: 'push', afterCommit: true }]);
+  assert.deepEqual(detectGitOps('git push && git commit -m x'), [{ op: 'push', afterCommit: false }, C], 'push 가 먼저면 커밋 전 HEAD 를 올리는 것이라 afterCommit 이 아니다');
+  assert.deepEqual(detectGitOps('git push; git commit -m x; git push'), [{ op: 'push', afterCommit: false }, C, { op: 'push', afterCommit: true }]);
+  assert.deepEqual(detectGitOps('git commit -m x; git push; git push --tags'), [C, { op: 'push', afterCommit: true }], '같은 push 는 한 번만');
+  assert.deepEqual(detectGitOps('& git commit -m x; & git.exe push'), [C, { op: 'push', afterCommit: true }], 'PowerShell 호출 연산자·git.exe');
+  assert.deepEqual(detectGitOps('git commit -m x; if ($?) { git push }'), [C, { op: 'push', afterCommit: true }], 'PowerShell 스크립트블록 안의 push');
+  assert.deepEqual(detectGitOps('git commit -m x; if ($LASTEXITCODE -eq 0) {git push origin HEAD}'), [C, { op: 'push', afterCommit: true }], '중괄호 바로 뒤도 같다');
+  assert.deepEqual(detectGitOps("echo '{git commit}'; git push"), [C, { op: 'push', afterCommit: false }], '따옴표 안의 가짜 commit 은 판정 대상엔 들어가되 뒤의 push 를 afterCommit 으로 만들지 않는다');
+  assert.deepEqual(detectGitOps('git commit -m "fix: x" && git push'), [C, { op: 'push', afterCommit: true }], '메시지 뒤의 진짜 push 는 그대로 afterCommit');
+  assert.deepEqual(detectGitOps('git status && git log'), []);
+  assert.deepEqual(detectGitOps('echo "git commit"; echo "git push"'), [], '따옴표가 바로 앞에 붙은 문구는 명령이 아니다');
+  assert.deepEqual(detectGitOps(''), []);
+  assert.equal(detectGitOp('git commit -m x && git push'), 'commit', 'detectGitOp 은 첫 op 그대로');
+  assert.equal(effectiveCwd('git.exe -C frontend commit -m x', '/r').replace(/\\/g, '/').endsWith('/r/frontend'), true, 'git.exe -C 도 실행 디렉토리로 읽는다');
+});
+
+test('commit && push 복합 명령 — push 도 전량 게이트로 판정한다(커밋 뒤 인덱스 트리 기준) · docs-only 는 그대로 통과', () => {
+  const dir = makeRepo();
+  // docs-only 복합은 어느 브랜치든 통과 — closure 문서 커밋+push 흐름이 막히면 안 된다
+  edit(dir, 'docs/README.md', '# docs v2\n'); g(dir, 'add', '-A');
+  const docs = hook(dir, 'git commit -m docs && git push');
+  assert.equal(docs.decision, 'pass', docs.reason); assert.ok(docs.reason.includes('DOCS_ONLY'), docs.reason);
+  g(dir, 'commit', '-q', '-m', 'docs');
+
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const compound = 'git commit -m x && git push -u origin feat/ABC-1';
+  const noGate = hook(dir, compound);
+  assert.equal(noGate.decision, 'deny'); assert.ok(noGate.reason.includes('git commit') && noGate.reason.includes('NO_GATE'), '둘 다 막히면 앞선 commit 의 사유가 나온다: ' + noGate.reason);
+
+  assert.equal(gate(dir, '--commit').status, 0);
+  addReview(dir);
+  assert.equal(hook(dir, 'git commit -m x').decision, 'pass', 'commit 단독은 경량 게이트로 통과');
+  // 같은 명령의 push 는 경량 기록으로 못 나간다 — 종전엔 첫 op(commit)만 봐서 통과했다
+  const light = hook(dir, compound);
+  assert.equal(light.decision, 'deny'); assert.ok(light.reason.includes('git push') && light.reason.includes('GATE_LEVEL'), light.reason);
+  const ps = hook(dir, 'git commit -m x; git push', dir, 'PowerShell');
+  assert.equal(ps.decision, 'deny'); assert.ok(ps.reason.includes('git push') && ps.reason.includes('GATE_LEVEL'), 'PowerShell `;` 복합도 같다: ' + ps.reason);
+
+  // 전량 게이트(스테이징된 트리)와 리뷰가 있으면 통과 — 판정 기준이 아직 HEAD 가 아니라 커밋 뒤 인덱스 트리여야 GATE_STALE 이 안 난다
+  assert.equal(gate(dir, '--full').status, 0);
+  addReview(dir);
+  const full = hook(dir, compound);
+  assert.equal(full.decision, 'pass', full.reason);
+
+  // 전량 게이트 뒤 코드가 또 바뀌면 복합 명령의 push 도 GATE_STALE
+  edit(dir, 'frontend/app.js', 'export default 9\n'); g(dir, 'add', '-A');
+  const stale = hook(dir, compound);
+  assert.equal(stale.decision, 'deny'); assert.ok(stale.reason.includes('GATE_STALE'), stale.reason);
+});
+
+test('따옴표 안의 가짜 commit 이 뒤의 진짜 push 를 느슨하게 만들지 않는다 — 인덱스 기준은 진짜 commit 뒤에서만', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  assert.equal(gate(dir, '--commit').status, 0);
+  addReview(dir);
+  g(dir, 'commit', '-q', '-m', 'c1'); // HEAD = 경량 게이트만 통과한 C1
+  edit(dir, 'frontend/app.js', 'export default 2\n'); g(dir, 'add', '-A'); // 인덱스 = C1 + Y
+  assert.equal(gate(dir, '--full').status, 0);
+  addReview(dir); // 전량 게이트·리뷰는 "인덱스 = C1 + Y" 트리에 있다
+
+  const alone = hook(dir, 'git push');
+  assert.equal(alone.decision, 'deny'); assert.ok(alone.reason.includes('GATE_STALE'), 'HEAD(C1)에는 Y 가 없으니 push 는 막힌다: ' + alone.reason);
+  const fake = hook(dir, "echo '{git commit}'; git push");
+  assert.equal(fake.decision, 'deny'); assert.ok(fake.reason.includes('git push') && fake.reason.includes('GATE_STALE'), '따옴표 안의 commit 문구로 push 가 인덱스 기준이 되면 안 된다: ' + fake.reason);
+  const real = hook(dir, 'git commit -m y && git push');
+  assert.equal(real.decision, 'pass', '진짜 commit 뒤의 push 는 인덱스 기준 — 전량 게이트가 그 트리에 있다: ' + real.reason);
+});
+
+test('셸 툴 둘 다 판정 — PowerShell 로 git commit 해도 같은 게이트 · & git / git.exe 도 감지 · 비-셸 툴은 판정 안 함', () => {
+  const dir = makeRepo();
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const ps = hook(dir, 'git commit -m code', dir, 'PowerShell');
+  assert.equal(ps.decision, 'deny', 'PowerShell 툴의 커밋도 막혀야 한다(한 셸만 보면 다른 셸로 뚫린다)');
+  assert.ok(ps.reason.includes('BRANCH_PATTERN'), ps.reason);
+  assert.equal(hook(dir, '& git commit -m code', dir, 'PowerShell').decision, 'deny');
+  assert.equal(hook(dir, 'git.exe commit -m code', dir, 'PowerShell').decision, 'deny');
+  assert.equal(detectGitOp('Set-Location backend; git commit -m x'), 'commit');
+  const other = hook(dir, 'git commit -m code', dir, 'Edit');
+  assert.equal(other.decision, 'pass');
+  assert.ok(!other.reason.includes('[jira-harness]'), '비-셸 툴엔 판정 없음');
+});
+
+test('hooks.json matcher 는 gate-core 의 SHELL_TOOLS 와 같은 집합이다 — 한쪽에만 있는 셸 툴은 게이트가 아예 안 돈다', () => {
+  const hooks = JSON.parse(readFileSync(join(HERE, '../../hooks/hooks.json'), 'utf8'));
+  const entry = hooks.hooks.PreToolUse.find(h => h.hooks.some(x => x.command.includes('commit-gate.mjs')));
+  assert.ok(entry, 'commit-gate 를 부르는 PreToolUse 항목이 있어야 한다');
+  assert.deepEqual([...entry.matcher.split('|')].sort(), [...SHELL_TOOLS].sort());
 });
 
 test('harness.json 없는 저장소 · mode=off 는 통과, 비-git 명령은 판정 자체를 안 한다', () => {
