@@ -2,7 +2,7 @@
 // 기존 테스트 파일은 건드리지 않는다 — 헬퍼는 여기서 자체로 둔다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -202,7 +202,7 @@ function simPlan(args) {
   return { out, prompt: (label) => out.calls.find((c) => c.label === label).prompt };
 }
 
-test('plan.js: 하위 구성이 Design·scope 프롬프트에 붙고, Herdr 꺼짐(A)/켜짐(B)에서 레인 규칙이 갈린다', () => {
+test('plan.js: 하위 구성이 Design·scope 프롬프트에 붙고, Herdr 꺼짐(A)/켜짐(B)에서 레인 규칙이 갈린다', { skip: !existsSync(`${ROOT}/workflows/plan.js`) && 'Codex 생성판에는 workflows/ 가 없다' }, () => {
   const subtasks = [{ parent: 'ABC-10', children: [{ key: 'ABC-11', summary: '[DDL] 컬럼 추가' }, { key: 'ABC-12', summary: '[server] soft delete' }] }];
   const common = {
     keys: ['ABC-10', 'ABC-11', 'ABC-12'], issueBodies: { 'ABC-10': '부모', 'ABC-11': 'DDL', 'ABC-12': '엔티티' }, guidePaths: { 'ABC-10': 'docs/ABC-10-dev-guide.md' },
