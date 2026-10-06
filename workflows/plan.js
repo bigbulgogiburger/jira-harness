@@ -33,6 +33,12 @@ const stamp = typeof A.ts === 'string' && A.ts ? A.ts : '(호출자가 ts 를 �
 // Herdr 구현 레인(herdr.lanes = implement|all)이 켜진 프로젝트만 준다 — 없으면 kind 지시가 프롬프트에 붙지 않는다.
 const herdrKinds = Array.isArray(A.herdrKinds) ? A.herdrKinds.filter((k) => typeof k === 'string' && k) : [];
 const herdrProfiles = isPlainObject(A.herdrProfiles) ? A.herdrProfiles : {};
+// 하위이슈 묶음 — /issue 는 준 이슈의 하위를 같이 가져온다. [{parent, children:[{key, summary?} | "KEY"]}] (하위가 없으면 비운다)
+const subtaskGroups = (Array.isArray(A.subtasks) ? A.subtasks : [])
+  .filter((g) => isPlainObject(g) && typeof g.parent === 'string' && Array.isArray(g.children) && g.children.length);
+const subtaskText = subtaskGroups
+  .map((g) => `- ${g.parent} 의 하위: ${g.children.map((c) => (typeof c === 'string' ? c : `${c.key}${c.summary ? ` (${c.summary})` : ''}`)).join(' · ')}`)
+  .join('\n');
 
 const keyList = A.keys.join(', ');
 const guideEntries = A.keys.map((k) => `- ${k} → ${A.guidePaths[k] ?? A.guidePaths[A.keys[0]] ?? '(경로 없음)'}`).join('\n');
@@ -121,6 +127,7 @@ const DESIGN_SCHEMA = {
         properties: {
           name: { type: 'string' },
           model: { type: 'string' },
+          key: { type: 'string' },
           files: { type: 'array', items: { type: 'string' } },
           worktree: { type: 'boolean' },
           brief: { type: 'string' },
@@ -289,6 +296,18 @@ const designPrompt = [
     `  **Herdr 구현 레인이 켜져 있다** — 레인마다 \`kind\` 를 ${herdrKinds.join(' / ')} 중 하나로 고르고 \`kind_reason\` 한 줄(왜 그 kind 인가)을 함께 적는다. 레인은 각자 worktree 에서 그 kind 의 에이전트가 돈다(worktree 는 실행기가 항상 판다 — worktree 플래그와 무관). 고르지 않으면 실행기가 풀 순서대로 기계적으로 배정한다.`,
     `  kind 프로파일(가설 — 레인 기록이 쌓이기 전까지의 기본값. 근거가 얇은 kind 에 핵심 레인을 몰지 않는다): ${herdrKinds.map((k) => `${k} = ${herdrProfiles[k] ?? '(프로파일 없음)'}`).join(' · ')}`,
   ] : []),
+  ...(subtaskGroups.length ? [
+    '  **하위이슈 구성** — 이 브랜치는 부모 이슈와 그 하위이슈를 **한 번에** 처리한다(하위 본문도 위 이슈 본문 재료에 같이 실려 있다):',
+    ...subtaskText.split('\n').map((l) => `  ${l}`),
+    '  - 가이드는 여전히 한 장이다 — `## 요구`·`## 작업 항목` 을 하위이슈 키별로 나눠 쓴다.',
+    '  - **하위이슈마다 DoD 가 최소 1건** 있어야 하고 그 DoD 의 text 는 `[KEY]` 로 시작한다(예: `[ABC-12] …`) — 하위의 인수조건을 DoD 로 옮긴다. DoD 없이 빠진 하위가 있으면 scope 검증이 BLOCK 한다.',
+    '  - 다른 하위가 의존하는 선행 하위(DDL·공통 계약·공유 모듈)는 레인으로 만들지 않는다 — 가이드 `## 작업 항목` 에 **"Phase 0 — 메인이 먼저 구현하고 커밋"** 이라고 적는다.',
+    ...(herdrKinds.length ? [
+      '  - Herdr 구현 레인이 켜져 있으므로 Phase 0 가 아닌 **하위이슈마다 레인 하나**를 둔다. 레인 객체에 `key`(그 하위의 이슈 키)를 추가로 쓰고, name 은 키를 소문자로 줄인 `abc-12` 꼴(`[a-z][a-z0-9_-]{0,31}`)로 한다. 다른 하위와 파일을 나눠 쓰면 쪼개지 말고 한 레인에 합친다.',
+    ] : [
+      '  - Herdr 구현 레인이 꺼져 있다 — **모든 레인의 worktree 는 false**(한 작업트리에서 처리한다. worktree 로 격리해도 그 변경을 메인으로 가져오는 단계는 Herdr 실행기에만 있다). 하위를 레인으로 나누는 것은 파일 소유가 겹치지 않을 때만이고, 겹치거나 근거가 없으면 레인 1개로 두고 brief 에 하위 처리 순서를 적는다. 레인이 하위 한 건을 맡으면 레인 객체에 `key` 를 추가로 쓴다.',
+    ]),
+  ] : []),
   '- `dod`: [{id, text, probe, tests, cwd, expect, human}]. id 는 D1, D2 …',
   '  **테스트를 도는 항목은 `tests: {stack, select[]}` 로 쓴다** — `.claude/harness.json` 의 그 스택에 `dod_tests` 가 있을 때. 게이트가 스택별로 선택을 합쳐 **한 번만** 돌리고 리포트로 항목마다 판정한다(probe 는 null).',
   '  select 는 gradle-junit 이면 `--tests` **클래스** 패턴(예 `*FeeCalculatorTest*` — 메서드 단위는 판정 못 한다), vitest 면 스택 dir 기준 파일 경로 필터(예 `src/views/settlement/__tests__`). 설계에 적은 테스트 클래스명·파일 경로와 **글자까지 같게** 쓴다.',
@@ -369,6 +388,9 @@ const scopePrompt = [
   '- 테스트를 도는 probe 에 expect.min_tests 가 없다(0건 실행이 초록으로 통과한다). 반대로 건수를 출력하지 않는 sentinel probe 에 min_tests 가 있다(분모 미확인으로 상시 FAIL).',
   '- probe 의 -t/--tests 필터 문자열이나 tests.select 가 설계의 테스트 이름·파일 경로와 리터럴로 일치하지 않는다(0건 매치). 위반 주입 probe 의 치환 대상 문자열이 목표 코드에 없다(replace 가 조용한 no-op).',
   '- 레인들의 files 가 서로 겹치는데 worktree 가 false 다.',
+  ...(subtaskGroups.length ? [
+    `- 하위이슈(${subtaskGroups.flatMap((g) => g.children.map((c) => (typeof c === 'string' ? c : c.key))).join(', ')}) 중 text 가 \`[KEY]\` 로 시작하는 DoD 가 하나도 없는 것이 있다(누락 — 선행 Phase 0 하위도 DoD 는 있어야 한다).`,
+  ] : []),
   'blocker 는 "무엇이 · 왜" 한 줄로 쓴다. 모호한 지적은 notes 로.',
 ].join('\n');
 

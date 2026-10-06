@@ -18,6 +18,7 @@ const args = opt('--args') ? JSON.parse(opt('--args')) : undefined;
 const responses = opt('--responses') ? JSON.parse(readFileSync(resolve(opt('--responses')), 'utf8')) : {};
 const asJson = argv.includes('--json');
 const strict = argv.includes('--strict');
+const withPrompts = argv.includes('--prompts'); // calls[].prompt 에 프롬프트 본문을 싣는다(프롬프트 내용 검사용)
 
 let src = readFileSync(resolve(file), 'utf8');
 if (!/^\s*export const meta\s*=/m.test(src)) { console.error('워크플로 파일은 `export const meta = {...}` 로 시작해야 한다'); process.exit(1); }
@@ -57,6 +58,7 @@ const __sim = { meta: null };
 const agent = async (prompt, opts = {}) => {
   const n = ++seq;
   const rec = { n, label: opts.label ?? `agent#${n}`, model: opts.model ?? null, phase: opts.phase ?? currentPhase, hasSchema: !!opts.schema, isolation: opts.isolation ?? null, promptChars: String(prompt ?? '').length };
+  if (withPrompts) rec.prompt = String(prompt ?? '');
   calls.push(rec);
   if (!opts.model) warnings.push(`agent() #${n} "${rec.label}" 에 model 이 없다`);
   if (!prompt || String(prompt).length < 40) warnings.push(`agent() #${n} "${rec.label}" 프롬프트가 너무 짧다(${rec.promptChars}자)`);

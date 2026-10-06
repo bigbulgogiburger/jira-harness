@@ -178,6 +178,16 @@
         }
       }
     },
+    "subtasks": {
+      "type": "object",
+      "description": "이슈를 주면 하위이슈를 같이 처리한다(기본·끌 수 없음). 이 블록은 어느 하위를 이 저장소 몫으로 볼지만 정한다.",
+      "properties": {
+        "match": {
+          "type": ["string", "null"],
+          "description": "하위이슈 summary 에 거는 정규식. 걸린 하위만 이 브랜치로 가져온다(예: 멀티 레포 이슈에서 \"^\\\\[(DDL|server)\\\\]\"). 없으면 끝나지 않은 하위 전부 — 유인 모드는 표를 보이고 한 번 확인한다"
+        }
+      }
+    },
     "docs_only_paths": {
       "type": "array",
       "items": {

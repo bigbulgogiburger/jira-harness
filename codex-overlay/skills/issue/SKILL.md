@@ -45,7 +45,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 
 | stage | 한 줄 | 주체 · 수단 | 끝나면 |
 |-------|------|------------|--------|
-| start | 브랜치 채택/생성 · 상태 JSON · Jira 착수(assignee·전이·댓글) | `issue-start.mjs` + Atlassian MCP 3콜 | grill (키 3개+ 또는 범위 불명이면 먼저 recon) |
+| start | **하위이슈 확장** · 브랜치 채택/생성 · 상태 JSON · Jira 착수(assignee·전이·댓글) | `issue-start.mjs` + Atlassian MCP 3콜 | grill (키 3개+ 또는 범위 불명이면 먼저 recon) |
 | recon | 결정 분기점만 찾는 정찰(선택) | Workflow `workflows/recon.js` (sonnet) | grill |
 | grill | 분기점을 **한 번에 하나씩** 묻고 확정 | `jira-harness 플러그인의 grilling 스킬` 을 그 자리에서 따른다 | `issue-set.mjs --decision` · `--stage plan` |
 | plan | dev-guide 초안 + 레인·DoD 설계 → **사용자 승인** | Workflow `workflows/plan.js` → `issue-set.mjs --merge --from plan` → request_user_input | 승인 시 `.draft` 확정 · `wiki-row.mjs` forecast · `--stage implement` |
@@ -76,7 +76,8 @@ node "<P>/scripts/issue-start.mjs" --status --json
 
 - **`--unattended`(무인)**: request_user_input 을 부르지 않고 권장안을 택한다(결정·승인에 `(unattended)` 표기). 사람 게이트(human DoD·머지)에 닿으면 멈추고 보고. 커밋은 `node "<P>/scripts/safe-commit.mjs" -m "<메시지>" [--push]` — 훅과 같은 판정을 스크립트가 하고 통과할 때만 커밋한다(훅이 발화하지 않는 헤드리스 경로에서도 같은 규율).
 - **Codex 실행 경로**: verify 레인은 `scripts/lanes-codex.mjs`를 사용한다. 개별 역할 위임은 `subagents/<name>.toml`의 `developer_instructions`를 읽어 `spawn_agent` 프롬프트에 넣는다. Claude 에이전트 이름이나 모델 티어를 Codex 호출 인자로 넘기지 않는다. recon/plan 의 저장 워크플로는 아직 이식되지 않았다 — 해당 자동 실행을 요청받으면 미지원으로 보고하고 수동 진행 범위를 확인한다. **implement 는 이식됐다**: Herdr 안이고 `herdr.lanes` 가 `implement`/`all` 이면 `scripts/herdr-lanes.mjs implement` 가 레인마다 worktree + kind pane 을 띄우고 패치를 회수한다(Node 스크립트라 Codex 에서도 그대로 돈다). Herdr 밖이면 메인이 레인을 순차로 직접 구현한다.
-- **다중 키** `ABC-696,ABC-940`: 브랜치 `feat/ABC-696-940` 하나, dev-guide 한 장, 상태 JSON 하나. Jira 콜은 키마다.
+- **하위이슈(항상)**: 사용자가 준 이슈는 **몇 개든** 그 하위이슈를 같이 꺼내 처리한다 — 플래그 없음("이 이슈만" 이라고 하면 건너뜀). start 직전에 키마다 `getJiraIssue` 로 읽어 `issue-subtasks.mjs` 로 풀고(끝난 하위·다른 프로젝트·`harness.json` `subtasks.match` 밖은 제외), 부모+하위를 아래 다중 키 한 브랜치로 처리한다. 구현은 Herdr 밖이면 한 작업트리(전략 A), Herdr 레인이면 하위마다 레인+worktree(전략 B) — stages.md §start·§implement·§complete.
+- **다중 키** `ABC-696,ABC-940`(하위가 붙으면 `ABC-696-697-698` 꼴): 브랜치 `feat/ABC-696-940` 하나, dev-guide 한 장, 상태 JSON 하나. Jira 콜은 키마다.
 - **worktree**: 어느 worktree 에서 실행해도 상태·로그는 메인 저장소의 runtime 에 쓰인다 — 같은 브랜치의 게이트 기록을 worktree 와 메인이 공유한다.
 - `harness.json` 의 게이트 명령이 틀렸으면 이 스킬에서 고치지 않는다 — `jira-harness 플러그인의 setup 스킬` 의 일이다.
 

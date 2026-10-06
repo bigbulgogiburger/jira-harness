@@ -7,14 +7,19 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 
 ## start
 
-1. `issue-start.mjs <KEY[,KEY…]> [--adopt] --json`
+0. **하위이슈 확장 — 사용자가 준 키가 몇 개든 항상**(플래그 없음. 사용자가 "이 이슈만"·"하위 빼고" 라고 한 경우만 건너뛴다): 키마다 `getJiraIssue`(Atlassian MCP — `fields` 에 `subtasks` 를 포함. 본문·댓글도 이 호출이 겸한다)를 불러 응답 배열을 `node "<P>/scripts/issue-subtasks.mjs" --in - --json` 의 stdin 으로 준다. 이미 이슈 브랜치 위인데 상태만 없는 `NO_STATE` 는 확장하지 않고 `--status` 의 `keys` 를 그대로 쓴다.
+   - `code`: `RESUME` — 이 키로 시작해 진행 중인 브랜치가 있다. Jira 의 현재 하위 구성이 바뀌었어도 출력 `keys` 를 그대로 이어 간다 · `EXPANDED` — `keys` = 준 키 + 하위(번호 순) · `NO_SUBTASKS` — 하위가 없다(종전과 같다).
+   - 끝난 하위(완료 카테고리 · `jira.done_transition` 상태)·다른 프로젝트 키·`subtasks.match`(harness.json — 하위 summary 정규식. 멀티 레포 이슈에서 이 저장소 몫만 고를 때)에 안 걸린 하위는 빠지고, `children[]` 에 `reason` 과 함께 남는다.
+   - `confirm: true`(= `subtasks.match` 가 없다)이면 유인 모드에서 `children[]` 를 표로 한 번 보이고 "이 저장소 몫이 아닌 하위(예: 다른 레포의 `[mobile]`)는 빼라" 고 확인한다 — 뺄 것이 있으면 `keys_arg`·`group_args` 에서 그 키를 지워 쓴다. 무인이면 묻지 않고 전부 포함한다. 같은 확인이 되풀이되면 `subtasks.match` 설정을 안내한다.
+   - MCP 가 없거나 실패하면 준 키 그대로 가고 보고에 "하위이슈 미확인(사유)" 를 남긴다.
+1. `issue-start.mjs <keys_arg> [--adopt] [--group <group_args 마다>]… --json` — 하위가 붙었으면 `--group ABC-10=ABC-11,ABC-12` 가 부모↔하위를 상태 JSON `subtasks` 에 남긴다(새 상태를 만들 때만 — `RESUMED` 는 무시).
    - 기본 브랜치 위: `branch_template`(기본 `feat/{keys}`) 로 새 브랜치를 만들고 상태 JSON 을 쓴다.
    - 이미 이슈 브랜치 위(상태만 없음): 브랜치는 두고 상태만 만든다.
    - 그 밖의 브랜치: `--adopt` 가 있어야 그 브랜치를 채택한다(없으면 `ON_OTHER_BRANCH` 로 멈춘다 — 엉뚱한 브랜치에 이슈를 붙이는 사고 방지).
    - 이미 상태가 있으면 `RESUMED` — 아무것도 바꾸지 않는다.
 2. Atlassian MCP(도구 이름은 ToolSearch 로 찾는다 — `getJiraIssue` / `transitionJiraIssue` / `addCommentToJiraIssue`, 필요하면 `getAccessibleAtlassianResources` 로 cloudId 먼저):
-   - `getJiraIssue` 로 본문·댓글을 읽는다(사용자가 전달한 요약보다 원문이 우선 — 번복·누락이 섞인다). 파일에 저장하지 않는다.
-   - `transitionJiraIssue` 를 `jira.start_transition` 으로, `addCommentToJiraIssue` 에 출력의 `jira.comment` 를 그대로.
+   - 본문·댓글은 0번에서 읽은 것을 쓴다(사용자가 전달한 요약보다 원문이 우선 — 번복·누락이 섞인다). 하위로 새로 들어온 키만 `getJiraIssue` 를 더 부른다. 파일에 저장하지 않는다.
+   - `transitionJiraIssue` 를 `jira.start_transition` 으로, `addCommentToJiraIssue` 에 출력의 `jira.comment` 를 그대로 — **키마다**(부모·하위 전부).
    - MCP 가 없거나 실패하면 코드 진행은 막지 않되 보고에 "Jira 미반영(사유)" 를 남긴다.
 3. 키 3개 이상, 또는 본문만으로 범위가 안 잡히면 recon. 아니면 grill.
 
@@ -31,8 +36,8 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 ## plan
 
 1. 재료: `issueBodies{KEY: 본문}`(start 에서 읽은 것) · `guidePaths{KEY: 경로}` = `wiki.dev_guide` 템플릿의 `{KEY}` 치환(다중 키는 첫 키로 **한 장** — BE/FE 공통 변경을 별도 가이드로 쪼개지 않는다) · `hasWiki` = `wiki.index` 존재 · `hasMemory` = 자동 메모리 폴더 존재 · `wikiHits[]` = INDEX 에서 키·핵심어를 grep 한 줄(최대 10) · `decisions[]` = 상태 JSON 의 결정 · `sidecarPath` = `<runtime>/issues/<slug>.plan.json` · `repoRoot` = 프로젝트 루트 절대 경로(**필수** — 없으면 에이전트를 띄우기 전에 거부) · 선택 `ts`(ISO 시각 — 스크립트는 시계를 못 쓴다) · `models`(`harness.json.models`).
-   Herdr 안이고 `herdr.lanes` 가 `implement`/`all` 이면 `herdrKinds` = `herdr.kinds.implement`(없으면 `["claude"]`) · `herdrProfiles` = `herdr.kinds.profiles` 를 더해 Design 이 레인마다 `kind`·`kind_reason` 을 고르게 한다.
-2. `workflows/plan.js` 실행 — args `{keys, issueBodies, guidePaths, sidecarPath, repoRoot, hasWiki, hasMemory, wikiHits, decisions, ts?, models?, herdrKinds?, herdrProfiles?}`. Understand(코드·wiki sonnet / 이슈·메모리 haiku) → Design(opus 1레인 — dev-guide `.draft` 와 사이드카를 **에이전트가 직접** 쓴다) → Verify(sonnet 2레인: 제약·범위). 반환 `{verdict, blockers[], touched[], lanes[], dod[], guides}`. 빈 계획(lanes·dod 가 비었거나 Design 레인이 죽음)은 verify 가 전부 PASS 여도 `BLOCK` 이다.
+   `subtasks` = 하위가 붙은 브랜치면 상태 JSON `subtasks` 에 각 하위의 요약을 붙인 `[{parent, children:[{key, summary}]}]`(없으면 생략 — `issueBodies` 에는 하위 본문까지 키별로 넣는다) · Herdr 안이고 `herdr.lanes` 가 `implement`/`all` 이면 `herdrKinds` = `herdr.kinds.implement`(없으면 `["claude"]`) · `herdrProfiles` = `herdr.kinds.profiles` 를 더해 Design 이 레인마다 `kind`·`kind_reason` 을 고르게 한다.
+2. `workflows/plan.js` 실행 — args `{keys, issueBodies, guidePaths, sidecarPath, repoRoot, hasWiki, hasMemory, wikiHits, decisions, ts?, models?, subtasks?, herdrKinds?, herdrProfiles?}`. Understand(코드·wiki sonnet / 이슈·메모리 haiku) → Design(opus 1레인 — dev-guide `.draft` 와 사이드카를 **에이전트가 직접** 쓴다) → Verify(sonnet 2레인: 제약·범위). 반환 `{verdict, blockers[], touched[], lanes[], dod[], guides}`. 빈 계획(lanes·dod 가 비었거나 Design 레인이 죽음)은 verify 가 전부 PASS 여도 `BLOCK` 이다.
 3. `verdict` 가 `BLOCK` 이면 blockers 를 그대로 보여주고 grill 로 돌아간다(설계를 억지로 통과시키지 않는다).
 4. `issue-set.mjs --merge <sidecarPath> --from plan` — touched·lanes·dod·guides 반영. 그 뒤 `--stage plan`.
 5. 승인: 범위·레인·DoD·되돌리기 비싼 결정을 5~10줄로 보인 뒤 request_user_input(진행(권장) / 수정할 것 있음 / 다시 계획). go/no-go 를 묻지 말고 수정 요청만 받는다.
@@ -45,6 +50,10 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 - 레인 1개(기본): 메인이 직접 구현한다. dev-guide 의 DoD 를 작업 목록으로 쓴다.
 - 레인 2개 이상: **Phase 0 공통 계약**(DTO·API 경로·DDL·이벤트 이름)은 메인이 먼저 만들어 커밋한 뒤 `workflows/implement.js` args `{lanes[{name, model, worktree, files[], dod[]}], guidePaths, contracts, sidecarDir, sidecarPrefix, repoRoot, ts, maxTurns?}`(`sidecarDir` = `<runtime>/issues` · `sidecarPrefix` = `<slug>` · `maxTurns` 기본 60 — 턴 상한은 agent() 옵션이 아니라 프롬프트 지시로만 전달된다). 레인은 선언된 `model`(opus/sonnet) 과 `worktree` 플래그대로 돈다. 반환 `{lanes[{name, status, …}], failed[], sidecars[]}` — 죽은 레인은 빠지지 않고 `failed` 에 이름이 남는다. 레인별 사이드카 `<sidecarDir>/<sidecarPrefix>.lane-<name>.json` 을 `issue-set.mjs --merge` 로 반영하고, 레인 경계(seam — 한쪽이 부르고 다른 쪽이 받는 곳)는 메인이 직접 대조한다.
 - **Codex 에는 `workflows/implement.js` 를 돌릴 Workflow 툴이 없다.** 레인 2개 이상의 자동 병렬 경로는 **Herdr 구현 레인** 하나다 — Herdr 안이고 `harness.json.herdr.lanes` 가 `implement` 또는 `all` 이면 `node "<P>/scripts/herdr-lanes.mjs" implement --slug <slug> [--lanes a,b] [--contracts-file <Phase 0 계약 md>] [--dry-run] --cwd <루트> --json`. 상태 JSON `lanes[]` 마다 `lane/<slug>/<name>` worktree 를 파고 레인의 `kind`(plan 이 골랐으면 그대로, 없으면 `herdr.kinds.implement` 풀 순서 — codex 자신도 kind 가 될 수 있다)로 pane 에이전트를 띄운다. **Phase 0 계약은 먼저 커밋한다**(worktree 는 HEAD 에서 갈린다 — 출력 `dirty_base` 가 못 보는 목록). 레인은 커밋하지 않고, 끝나면 실행기가 worktree 의 diff 를 패치로 회수해 메인에 적용한다(`applied: yes|conflict|skipped|empty|no-apply` — `conflict` 는 메인이 표식을 푼다). 결과는 실행기가 `issue-set.mjs --lane` 으로 `lanes[].kind·result` 에 남긴다. 절차·함정은 [herdr-lanes.md](herdr-lanes.md) §implement. Herdr 밖·설정 off 면 출력 `ok:false` — 그때는 메인이 레인을 **순차로 직접** 구현한다(위 args 계약의 프롬프트를 `spawn_agent` 에 넘겨도 된다 — 다만 그 결과는 사이드카 파일과 반환값 둘 다로 판정한다).
+- **하위이슈가 붙은 브랜치**(상태 JSON `subtasks` 가 비어 있지 않다): 하위의 코드는 **한 브랜치·한 상태 JSON** 에 쌓이고, 전략만 Herdr 여부로 갈린다.
+  - **전략 A — Herdr 밖(또는 `herdr.lanes` 가 off/verify)**: **한 작업트리**에서 처리한다. 격리 worktree 의 변경을 메인으로 가져오는 단계(패치 회수·적용)는 Herdr 실행기에만 있어서, Workflow 의 `isolation: 'worktree'` 레인은 결과가 메인에 안 돌아온다 — plan 이 레인의 `worktree` 를 전부 false 로 둔다. 메인이 선행(Phase 0) 하위부터 DoD 의 `[KEY]` 순서대로 직접 구현한다(Codex 에는 Workflow 툴이 없다).
+  - **전략 B — Herdr 안 + `herdr.lanes` 가 `implement`/`all`**: 하위마다 레인 하나(`name` = 키를 소문자로 줄인 `abc-12`, 레인 `key` = 이슈 키)가 자기 `lane/<slug>/<name>` worktree 에서 pane 에이전트로 돈다. **선행 하위(DDL·공통 계약)는 레인이 아니라 Phase 0** — 메인이 먼저 구현·커밋한 뒤 레인을 띄운다(worktree 는 HEAD 에서 갈린다). 회수·적용은 위 Herdr 구현 레인 그대로다.
+  - 실행기가 `ok:false` 면 B 에서 A 로 폴백한다. 어느 쪽이든 게이트·리뷰는 브랜치 전체에 한 번이고, 하위별 진척은 DoD 의 `[KEY]` 표기로 본다.
 - 레인의 "완주" 는 반환값·`lanes[].status` 로 판정한다 — 산출물 파일이 있다고 완주가 아니다(중간에 죽은 레인도 파일은 남긴다). Herdr 레인은 `status` 가 `done` 이고 사이드카가 `failed` 가 아닐 때만 패치가 적용된다.
 - 구현 중간 커밋은 gate → commit 순서 그대로.
 
@@ -88,5 +97,5 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
    거부 코드는 훅과 같은 사다리(SKILL.md §3) 에 세 개가 더 있다: `CLAUDE_MD_TOO_LONG`(줄여서 재실행) · `BAD_STATE`(상태 JSON 이 스키마에 안 맞음 — `issue-set.mjs` 로 고치거나 `issue-start.mjs` 로 다시 만든다) · `PUSH_FAILED`(원격 거부 — 사유를 그대로 보고, 상태는 archive 로 옮기지 않는다).
 3. `wiki-row.mjs --index <wiki.index> --key <KEY> --set "<상태열>=closed" … --log <wiki.log> --event "<한 줄>" --phase closure` → `wiki-lint.mjs --docs <docs> [--memory <memory dir>] --root <프로젝트 루트>` 가 high 위반 0.
 4. 배운 것이 있으면 `jira-harness 플러그인의 kb-ingest 스킬` 로 wiki 종합 페이지 최대 `wiki.max_pages_per_closure` 장. 자동 메모리에 남길 것은 `memory-index.mjs --dir <memory dir> --add "<인덱스 한 줄>"`(본문 파일은 직접 쓴다).
-5. Atlassian MCP: `transitionJiraIssue`(`jira.done_transition`) + `addCommentToJiraIssue`(출력 comment). 키마다.
+5. Atlassian MCP: `transitionJiraIssue`(`jira.done_transition`) + `addCommentToJiraIssue`(출력 comment). 키마다 — 하위부터. **부모**(상태 JSON `subtasks[].parent`)는 전이 직전에 `getJiraIssue` 로 그 하위를 다시 읽어, 이 브랜치에 안 들어온 하위(다른 레포 몫·`subtasks.match` 밖)가 아직 안 끝났으면(완료 카테고리 · `jira.done_transition` 상태가 아니면) 부모를 전이하지 않고 "부모 <KEY> 보류 — 남은 하위: <KEY…>" 를 보고한다.
 6. 보고: 브랜치·push 여부·게이트 분모·리뷰 결과·사람이 할 일(main 머지는 사람 — 자동 머지 금지).

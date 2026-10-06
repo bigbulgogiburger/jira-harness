@@ -39,6 +39,8 @@ node "<P>/scripts/herdr-lanes.mjs" implement --slug "<slug>" [--lanes be,fe] [--
 
 전제: Phase 0 계약은 **먼저 커밋**한다 — worktree 는 메인 HEAD 에서 갈리므로 커밋 안 된 수정은 레인이 못 본다(출력 `dirty_base` 가 그 목록이다). `--dry-run` 은 배정·브랜치·프롬프트만 보여주고 Herdr 를 부르지 않는다. worktree 는 끝나도 남는다(`herdr.close_panes` 와 무관 — 사람이 화면을 본다) — 닫기는 `herdr worktree remove --workspace <id>`.
 
+하위이슈 브랜치(상태 JSON `subtasks`)에서는 **레인 = 하위이슈 한 건**이다 — `lanes[].key` 에 그 이슈 키, `name` 은 키를 소문자로 줄인 것(`abc-538`, 위 이름 규칙). 다른 하위가 의존하는 선행 하위(DDL·공통 계약)는 레인이 아니라 Phase 0 로 메인이 먼저 커밋한다. 상세는 stages.md §implement.
+
 ## 상주 reviewer — Codex 판정 자체를 pane 으로 (`review.codex_via: "herdr"`)
 
 라운드 1 의 1번(Codex 판정)도 pane 으로 옮길 수 있다. `codex-review.sh` 는 호출마다 `codex exec` 를 새로 띄워 저장소를 처음부터 보고, 출력 상한에 잘리며, 화면이 없다. 상주 codex 는 셋 다 없다.

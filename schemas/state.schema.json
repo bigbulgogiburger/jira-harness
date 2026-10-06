@@ -17,6 +17,18 @@
       "items": { "type": "object", "required": ["q", "a"], "properties": { "q": { "type": "string" }, "a": { "type": "string" }, "at": { "type": "string" } } }
     },
     "touched": { "type": "array", "items": { "type": "string" } },
+    "subtasks": {
+      "type": "array",
+      "description": "이 브랜치로 같이 가져온 하위이슈 묶음(issue-start --group). keys 에는 부모와 하위가 모두 들어 있고, 여기는 누가 누구의 하위인지만 기록한다",
+      "items": {
+        "type": "object",
+        "required": ["parent", "children"],
+        "properties": {
+          "parent": { "type": "string" },
+          "children": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
     "lanes": {
       "type": "array",
       "items": {
@@ -25,6 +37,7 @@
         "properties": {
           "name": { "type": "string" },
           "model": { "type": "string" },
+          "key": { "type": "string", "description": "하위이슈 한 건을 맡는 레인이면 그 이슈 키(plan 이 쓴다)" },
           "files": { "type": "array", "items": { "type": "string" } },
           "worktree": { "type": "boolean" },
           "brief": { "type": "string", "description": "그 레인이 할 일 2~3문장(plan 이 쓴다)" },

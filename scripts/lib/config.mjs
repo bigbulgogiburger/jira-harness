@@ -19,6 +19,7 @@ export const DEFAULTS = Object.freeze({
   models: { orchestrate: 'inherit', design: 'opus', recon: 'sonnet', implement: 'opus', verify: 'sonnet' },
   wiki: { index: 'docs/INDEX.md', log: 'docs/LOG.md', schema: 'docs/INDEX-SCHEMA.md', dev_guide: 'docs/{KEY}-dev-guide.md', synthesis_dir: null, max_pages_per_closure: 3, claude_md_max_lines: 150 },
   jira: { start_transition: 'In Progress', done_transition: 'QA', comment_lang: 'ko' },
+  subtasks: { match: null },
   gate: { timeout_s: 1800, commit_budget_s: 180 },
 });
 
@@ -43,7 +44,7 @@ export function loadConfig(configPath) {
   const raw = JSON.parse(readFileSync(configPath, 'utf8'));
   assertValid(raw, 'harness', configPath);
   const cfg = { ...DEFAULTS, ...raw };
-  for (const k of ['review', 'models', 'wiki', 'jira', 'gate', 'herdr']) cfg[k] = { ...DEFAULTS[k], ...(raw[k] ?? {}) };
+  for (const k of ['review', 'models', 'wiki', 'jira', 'subtasks', 'gate', 'herdr']) cfg[k] = { ...DEFAULTS[k], ...(raw[k] ?? {}) };
   cfg.herdr.kinds = { ...DEFAULTS.herdr.kinds, ...(raw.herdr?.kinds ?? {}) };
   for (const [name, s] of Object.entries(cfg.stacks)) {
     cfg.stacks[name] = { compile: null, lint: null, build: null, test: null, extra: [], env_file: null, ...s };

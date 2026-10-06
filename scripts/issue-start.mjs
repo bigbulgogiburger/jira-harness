@@ -3,7 +3,8 @@
 //
 // 사용:
 //   node issue-start.mjs --status [--cwd <dir>] [--json]
-//   node issue-start.mjs <KEY[,KEY…]> [--adopt] [--cwd <dir>] [--json]
+//   node issue-start.mjs <KEY[,KEY…]> [--adopt] [--group <PARENT=CHILD[,CHILD…]>]… [--cwd <dir>] [--json]
+//   --group: 하위이슈 묶음을 상태 JSON 의 subtasks 에 기록한다(issue-subtasks.mjs 출력의 group_args). 새 상태를 만들 때만 쓴다(RESUMED 는 무시).
 //
 // 종료 코드: --status 는 항상 0(정보 조회, code 필드로 상태 판단). 시작 모드는 0(STARTED/ADOPTED/RESUMED) ·
 //            1(ON_OTHER_BRANCH — 실패가 아니라 안내) · 2(사용법/설정 오류).
@@ -22,9 +23,11 @@ import { herdrPing } from './lib/herdr.mjs';
 const argv = process.argv.slice(2);
 let cwdArg = process.cwd();
 let json = false, adopt = false, statusMode = false, keysArg = null;
+const groupArgs = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--cwd') cwdArg = argv[++i];
+  else if (a === '--group') groupArgs.push(argv[++i] ?? '');
   else if (a === '--json') json = true;
   else if (a === '--adopt') adopt = true;
   else if (a === '--status') statusMode = true;
@@ -119,7 +122,7 @@ if (statusMode) {
 
   const { gate, review } = gateReviewInfo(state, cfg, root);
   const nextFn = NEXT_HINTS[state.stage] ?? (() => '(알 수 없는 단계)');
-  emit({ code: 'OK', branch, keys: state.keys, slug, stage: state.stage, state_path: relPath, gate, review, dirty, next: nextFn(state.keys ?? []) });
+  emit({ code: 'OK', branch, keys: state.keys, subtasks: state.subtasks ?? [], slug, stage: state.stage, state_path: relPath, gate, review, dirty, next: nextFn(state.keys ?? []) });
 }
 
 // ---------- 시작 모드 ----------
@@ -136,6 +139,13 @@ const keyPattern = new RegExp(`^${cfg.issue_prefix}-\\d+$`);
 const badKeys = rawKeys.filter(k => !keyPattern.test(k));
 if (!rawKeys.length || badKeys.length) fail(2, `키 형식이 올바르지 않다: ${badKeys.join(', ') || '(비어 있음)'} — 기대 형식 ${cfg.issue_prefix}-숫자`);
 const keys = rawKeys;
+const groups = groupArgs.map((g) => {
+  const [parent, rest = ''] = g.split('=');
+  const p = (parent ?? '').trim().toUpperCase();
+  const children = rest.split(',').map(k => k.trim().toUpperCase()).filter(Boolean);
+  if (!keys.includes(p) || !children.length || children.some(c => !keys.includes(c))) fail(2, `--group 형식이 올바르지 않다: "${g}" — 기대 형식 PARENT=CHILD[,CHILD…] (모두 위 키 목록 안의 키)`);
+  return { parent: p, children };
+});
 
 /** "ABC-696","ABC-940" → "ABC-696-940" (같은 접두사 — issue_prefix 검증을 통과했으므로 항상 같다) */
 function keysToken(ks) {
@@ -176,6 +186,7 @@ if (state) {
   code = 'RESUMED';
 } else {
   state = newState(targetBranch, keys);
+  if (groups.length) state.subtasks = groups;
   writeState(sPath, state);
   created = true;
   code = scenario === 'adopt' ? 'ADOPTED' : 'STARTED';
@@ -194,4 +205,4 @@ if (existsSync(wfSrc)) {
 
 const relPath = relative(configRoot, sPath).replace(/\\/g, '/');
 const comment = `[jira-harness v3] 이슈 ${keys.join(', ')} 작업을 브랜치 \`${targetBranch}\` 에서 착수합니다.`;
-emit({ code, branch: targetBranch, keys, slug, state_path: relPath, created, workflows_dir: relative(configRoot, wfDir).replace(/\\/g, '/'), workflows: workflowsCopied, jira: { transition: cfg.jira.start_transition, comment } });
+emit({ code, branch: targetBranch, keys: state.keys, subtasks: state.subtasks ?? [], slug, state_path: relPath, created, workflows_dir: relative(configRoot, wfDir).replace(/\\/g, '/'), workflows: workflowsCopied, jira: { transition: cfg.jira.start_transition, comment } });
