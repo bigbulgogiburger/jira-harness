@@ -75,11 +75,12 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 
 ## gate
 
-- 커밋 전 `gate.mjs --commit [--stage-all]` — 컴파일·린트·DoD 프로브, **건드린 스택만**. 목표 `gate.commit_budget_s`(기본 3분).
-- push·complete 전 `gate.mjs --full` — 빌드·전체 테스트·extra(프로젝트 정적 게이트 등). 9~15분이면 `exec_command`로 시작하고 반환된 session_id를 `write_stdin`으로 기다린다.
+- 커밋 전 `gate.mjs --commit [--stage-all]` — 컴파일·린트, **건드린 스택만**. DoD 는 돌리지 않는다(커밋마다 DoD 를 다시 돌린 것이 경량 게이트 시간의 86%였다). 목표 `gate.commit_budget_s`(기본 3분). 구현 중 새 테스트가 도는지는 관련 테스트만 직접 돌려 본다.
+- push·complete 전 `gate.mjs --full` — **DoD 프로브를 먼저** 돌리고, 하나라도 FAIL 이면 스택 단계를 건너뛰고 끝난다(프로브를 고친 뒤 다시). 통과하면 빌드·전체 테스트·extra(프로젝트 정적 게이트 등) → DoD tests 항목. 9~15분이면 `exec_command`로 시작하고 반환된 session_id를 `write_stdin`으로 기다린다.
+- `--full --stacks a,b` 로 스택을 줄일 수 있지만 **이 브랜치가 바꾼 스택은 뺄 수 없다**(exit 2) — 기록은 결과만 남고 어느 스택이 돌았는지는 push·complete 가 다시 보지 않기 때문이다. 다른 스택의 파일을 읽는 테스트가 있으면 그 경로를 그 스택의 `stacks.<name>.paths` 에 넣어 둔다.
 - **Herdr 안이면** 게이트를 runner pane 에서 돌린다 — `node "<P>/scripts/herdr-lanes.mjs" gate --full|--commit [--stage-all] [--no-wait] --cwd <루트> --json`. 로그가 driver 컨텍스트 밖(pane)에 남고, 기록·토스트는 gate.mjs 가 그대로 한다. `--no-wait` 면 바로 돌아오고 완료 토스트(전량 PASS=done · FAIL=request)를 기다린다. 결과 JSON 은 출력의 `out`.
 - 같은 트리에 전량 통과 기록이 이미 있으면 `--commit` 은 재실행을 생략한다.
-- DoD `tests: {stack, select[]}` 항목은 스택별로 **한 번에** 돈다(`stacks.<stack>.dod_tests` — gradle `--tests` 합집합 · vitest 경로 합집합 + JSON 리포터) — 러너 리포트로 항목마다 판정한다(걸린 것 1건 이상 · 실패 0 · 통과 ≥ `min_tests`). 전량 게이트는 test 명령이 `dod_tests.run` 과 같으면 그 리포트를 읽기만 하고 다시 돌리지 않는다. `probe` 문자열 항목은 종전대로 항목마다 돈다 — 테스트를 도는 DoD 를 probe 로 쓰면 항목 수만큼 러너를 새로 띄운다(2026-09-23 실측: 41건 31.5분).
+- DoD `tests: {stack, select[]}` 항목은 스택별로 **한 번에** 돈다(`stacks.<stack>.dod_tests` — gradle `--tests` 합집합 · vitest 경로 합집합 + JSON 리포터) — 러너 리포트로 항목마다 판정한다(걸린 것 1건 이상 · 실패 0 · 통과 ≥ `min_tests`). test 명령이 `dod_tests.run` 과 같으면 그 리포트를 읽기만 하고 다시 돌리지 않는다. `probe` 문자열 항목은 항목마다 돈다 — 테스트를 도는 DoD 를 probe 로 쓰면 항목 수만큼 러너를 새로 띄운다(2026-09-23 실측: 41건 31.5분).
 - DoD `human:true` 는 게이트가 SKIPPED 로 남긴다 — 보고에 "사람 확인 필요 N건" 을 적는다. `expect.min_tests` 는 실행 건수 0 을 FAIL 로 본다(초록이 "검사 0" 인지 "위반 0" 인지 구분하기 위해). 건수는 러너 요약 줄(`Tests N passed`·`N tests completed`·`Tests run: N`)이나 숫자 한 줄에서 읽고 색상 코드는 벗긴다. 건수를 출력하지 않는 sentinel 프로브(위반 주입·존재 검사·lint 문구)에는 `min_tests` 를 두지 않는다 — 두면 "분모 미확인" 으로 상시 FAIL 이다.
 - FAIL 이면 `<runtime>/gate/<slug>-<level>-<시각>.log` 를 읽고 코드를 고친 뒤 재실행. 게이트 명령을 바꾸거나 테스트를 지워서 통과시키지 않는다.
 

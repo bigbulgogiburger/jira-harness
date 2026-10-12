@@ -26,7 +26,7 @@ const OKSET = new Set(['PASS', 'SKIPPED']);
 /** gate 기록의 결과 한 단어 — gate.mjs 와 같은 축(레벨에 속한 키만 본다. NOT_RUN 은 그 레벨의 키가 아니다) */
 export function gateOverall(gate) {
   if (!gate) return null;
-  const keys = gate.level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra', 'dod'] : ['compile', 'lint', 'dod'];
+  const keys = gate.level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra', 'dod'] : ['compile', 'lint'];
   return keys.every(k => OKSET.has(gate.results?.[k])) ? 'PASS' : 'FAIL';
 }
 

@@ -123,8 +123,9 @@ export function decide(op, cwd, opts = {}) {
   const gt = treeAccepted(g.tree, tree, cfg, root);
   if (!gt.ok) return deny('GATE_STALE', `게이트 기록 이후 코드가 바뀌었다(${gt.changed ? gt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — ${need} 재실행`);
   const r = g.results ?? {};
-  const mustCommit = ['compile', 'lint', 'dod'];
-  const mustPush = ['build', 'test', 'extra'];
+  // DoD 는 전량 게이트에서만 돈다 — 커밋은 compile·lint, push 는 거기에 build·test·extra·dod
+  const mustCommit = ['compile', 'lint'];
+  const mustPush = ['build', 'test', 'extra', 'dod'];
   const bad = (op === 'commit' ? mustCommit : [...mustCommit, ...mustPush]).filter(k => !OK.has(r[k] ?? 'NOT_RUN'));
   if (bad.length) return deny('GATE_FAIL', `게이트 결과 미통과: ${bad.map(k => `${k}=${r[k] ?? 'NOT_RUN'}`).join(' · ')} — ${need}`);
   if (g.log) {

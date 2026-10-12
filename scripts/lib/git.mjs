@@ -47,10 +47,19 @@ export function changedBetweenTrees(a, b, cwd) {
   return gitLines(['diff-tree', '-r', '--name-only', '--no-commit-id', a, b], { cwd });
 }
 
-export function stagedFiles(cwd) { return gitLines(['diff', '--cached', '--name-only'], { cwd }); }
-export function unstagedFiles(cwd) { return gitLines(['diff', '--name-only'], { cwd }); }
+// 경로 목록은 이름 바꾸기를 옛 경로·새 경로 둘 다로 센다(--no-renames) — `git diff` 는 diff.renames 기본값으로 새 경로만 보여 줘서
+// `git mv src/A.java docs/A.md` 가 docs-only 로 읽혀 게이트 없이 통과했다(2026-10-12 재현). diff-tree(changedBetweenTrees)는 원래 둘 다 본다.
+export function stagedFiles(cwd) { return gitLines(['diff', '--cached', '--name-only', '--no-renames'], { cwd }); }
+export function unstagedFiles(cwd) { return gitLines(['diff', '--name-only', '--no-renames'], { cwd }); }
 export function untrackedFiles(cwd) { return gitLines(['ls-files', '--others', '--exclude-standard'], { cwd }); }
-export function changedVsHead(cwd) { return gitLines(['diff', '--name-only', 'HEAD'], { cwd, allowFail: true }); }
+export function changedVsHead(cwd) { return gitLines(['diff', '--name-only', '--no-renames', 'HEAD'], { cwd, allowFail: true }); }
+
+/** 이 브랜치가 default_branch 에서 갈라진 뒤 커밋으로 바꾼 경로. merge-base 를 못 구하면 null */
+export function branchChangedFiles(cwd, defaultBranch) {
+  const mb = git(['merge-base', 'HEAD', defaultBranch], { cwd, allowFail: true });
+  if (mb.status !== 0) return null;
+  return gitLines(['diff', '--name-only', '--no-renames', `${mb.out}..HEAD`], { cwd, allowFail: true });
+}
 
 /** push 대상 커밋들이 바꾼 경로(upstream 없으면 default_branch 와의 merge-base 기준). 판정 불가면 null */
 export function pushChangedFiles(cwd, defaultBranch) {
@@ -61,7 +70,7 @@ export function pushChangedFiles(cwd, defaultBranch) {
     if (mb.status !== 0) return null;
     base = mb.out;
   }
-  return gitLines(['diff', '--name-only', `${base}..HEAD`], { cwd, allowFail: true });
+  return gitLines(['diff', '--name-only', '--no-renames', `${base}..HEAD`], { cwd, allowFail: true });
 }
 
 export function pinRef(name, objectId, cwd) {

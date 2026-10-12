@@ -51,7 +51,7 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | plan | dev-guide 초안 + 레인·DoD 설계 → **사용자 승인** | Workflow `workflows/plan.js` → `issue-set.mjs --merge --from plan` → request_user_input | 승인 시 `.draft` 확정 · `wiki-row.mjs` forecast · `--stage implement` |
 | implement | 코드 작성 — 레인 1개면 메인 직접. 2개+ 는 **Herdr 안 + `herdr.lanes` 가 `implement`/`all`** 이면 레인마다 worktree + kind(claude·codex·grok) pane 이 고치고 메인이 패치를 회수·적용, Herdr 밖이면 메인이 순차 구현 | 직접 / `herdr-lanes.mjs implement`([herdr-lanes.md](references/herdr-lanes.md) §implement) | verify |
 | verify | **Codex 판정** → (Codex 가 못 채운 자리에만) 워크플로 ≤4레인 → **메인이 확정/기각** → 기록 | `codex-review.sh` → `scripts/lanes-codex.mjs verify --json` → `issue-set.mjs --review` | gate |
-| gate | 커밋 전 경량(컴파일·린트·DoD) / push 전 전량(빌드·테스트·extra) | `gate.mjs --commit` / `gate.mjs --full` | commit / push |
+| gate | 커밋 전 경량(컴파일·린트) / push 전 전량(DoD 프로브 → 빌드·테스트·extra → DoD tests) | `gate.mjs --commit` / `gate.mjs --full` | commit / push |
 | commit·push | 평소처럼 `git commit` / `git push` — 훅이 판정 | 훅 (`hooks/hooks.json`) · 무인은 `safe-commit.mjs` | 다음 구현 또는 complete |
 | complete | 전량 게이트·리뷰 신선 확인 → push → 상태 아카이브 → wiki closure → Jira 전이·댓글 | `issue-complete.mjs` → `wiki-row.mjs` → `wiki-lint.mjs` → MCP | 사람 머지 대기 (자동 머지 금지) |
 

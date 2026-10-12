@@ -1,7 +1,7 @@
 // S2 통합 테스트 — 실제 임시 git 저장소에서 훅(commit-gate.mjs)과 러너(gate.mjs)를 실행한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, utimesSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -287,7 +287,7 @@ test('push 사다리: 경량 기록 → GATE_LEVEL · 전량 후 통과 · docs 
   assert.equal(tam.decision, 'deny'); assert.ok(tam.reason.includes('GATE_LOG_MISMATCH'), tam.reason);
 });
 
-test('DoD 프로브: 분모(min_tests) 없으면 FAIL → GATE_FAIL, 건수를 찍으면 PASS · 위반 주입(명령 실패)도 FAIL', () => {
+test('DoD 프로브: 경량 게이트는 DoD 를 돌리지 않는다 · 전량에서 분모(min_tests) 없으면 FAIL → push GATE_FAIL, 건수를 찍으면 PASS · 위반 주입(명령 실패)도 FAIL', () => {
   const dir = makeRepo();
   g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
   startIssue(dir);
@@ -298,25 +298,34 @@ test('DoD 프로브: 분모(min_tests) 없으면 FAIL → GATE_FAIL, 건수를 �
   ];
   writeState(stateFile(dir), st);
   edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
-  const r1 = gate(dir, '--commit', '--json');
-  assert.equal(r1.status, 1, '분모 미확인 → FAIL');
+  // 경량 게이트: 분모 없는 프로브가 있어도 compile·lint 만 보고 통과 — DoD 판정은 남기지 않는다
+  const c = gate(dir, '--commit', '--json');
+  assert.equal(c.status, 0, c.stderr + c.stdout);
   let s = readState(stateFile(dir));
+  assert.equal(s.gate.results.dod, 'NOT_RUN'); assert.equal(s.dod[0].last, 'PENDING'); assert.equal(s.gate.dod, '전량 게이트에서');
+  addReview(dir);
+  assert.equal(hook(dir, 'git commit -m x').decision, 'pass');
+  g(dir, 'commit', '-q', '-m', 'code');
+
+  const r1 = gate(dir, '--full', '--json');
+  assert.equal(r1.status, 1, '분모 미확인 → FAIL');
+  s = readState(stateFile(dir));
   assert.equal(s.gate.results.dod, 'FAIL'); assert.equal(s.dod[0].last, 'FAIL'); assert.equal(s.gate.dod, '0/1 (human 1 제외)');
   addReview(dir);
-  const h = hook(dir, 'git commit -m x');
+  const h = hook(dir, 'git push');
   assert.equal(h.decision, 'deny'); assert.ok(h.reason.includes('GATE_FAIL') && h.reason.includes('dod=FAIL'), h.reason);
 
   s.dod[0].probe = 'echo BUILD SUCCESSFUL && echo "3 tests completed"';
   writeState(stateFile(dir), s);
-  assert.equal(gate(dir, '--commit').status, 0);
+  assert.equal(gate(dir, '--full').status, 0);
   s = readState(stateFile(dir));
   assert.equal(s.gate.results.dod, 'PASS'); assert.equal(s.gate.dod, '1/1 (human 1 제외)');
   addReview(dir);
-  assert.equal(hook(dir, 'git commit -m x').decision, 'pass');
+  assert.equal(hook(dir, 'git push').decision, 'pass');
 
   s.dod[0].probe = 'echo BUILD SUCCESSFUL && echo "3 tests completed" && exit 7';
   writeState(stateFile(dir), s);
-  assert.equal(gate(dir, '--commit').status, 1, '프로브 실패 주입 → FAIL');
+  assert.equal(gate(dir, '--full').status, 1, '프로브 실패 주입 → FAIL');
   assert.equal(readState(stateFile(dir)).dod[0].last, 'FAIL');
 });
 
@@ -333,14 +342,14 @@ test('DoD 프로브: 러너 색상 코드(ANSI)가 낀 요약 줄도 건수·pat
   ];
   writeState(stateFile(dir), st);
   edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
-  assert.equal(gate(dir, '--commit').status, 0, 'ANSI 를 벗겨 3건을 읽고, sentinel 은 pattern 만으로 PASS');
+  assert.equal(gate(dir, '--full').status, 0, 'ANSI 를 벗겨 3건을 읽고, sentinel 은 pattern 만으로 PASS');
   let s = readState(stateFile(dir));
   assert.equal(s.gate.results.dod, 'PASS'); assert.equal(s.gate.dod, '2/2');
 
   // 위반 주입 ① 색상 낀 요약이 하한 미달(3 < 5) → FAIL
   s.dod[0].expect.min_tests = 5;
   writeState(stateFile(dir), s);
-  assert.equal(gate(dir, '--commit').status, 1, '실행 건수 3 < 5');
+  assert.equal(gate(dir, '--full').status, 1, '실행 건수 3 < 5');
   s = readState(stateFile(dir));
   assert.equal(s.dod[0].last, 'FAIL'); assert.equal(s.dod[1].last, 'PASS');
 
@@ -348,7 +357,7 @@ test('DoD 프로브: 러너 색상 코드(ANSI)가 낀 요약 줄도 건수·pat
   s.dod[0].expect.min_tests = 3;
   s.dod[1].probe = 'echo nothing-fired';
   writeState(stateFile(dir), s);
-  assert.equal(gate(dir, '--commit').status, 1, 'sentinel pattern 없음 → FAIL');
+  assert.equal(gate(dir, '--full').status, 1, 'sentinel pattern 없음 → FAIL');
   assert.equal(readState(stateFile(dir)).dod[1].last, 'FAIL');
 });
 
@@ -374,7 +383,7 @@ const runnerCalls = (dir, stack) => readFileSync(join(dir, stack, '.fake-runner.
 function setDod(dir, dod) { const st = readState(stateFile(dir)); st.dod = dod; writeState(stateFile(dir), st); }
 function setRunner(dir, stack, patch) { const f = join(dir, stack, '.fake-runner.json'); writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), ...patch })); }
 
-test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고(선택 합집합) 리포트로 항목마다 판정한다 — 분모 0·실패·하한 미달은 그 항목만 FAIL · 컴파일 실패면 지난 XML 을 믿지 않는다 · 클래스 이름은 파일명(<testsuite name> 은 @DisplayName 일 수 있다)', () => {
+test('DoD tests: 게이트는 스택마다 러너를 한 번만 띄우고(선택 합집합) 리포트로 항목마다 판정한다 — 분모 0·실패·하한 미달은 그 항목만 FAIL · 컴파일 실패면 지난 XML 을 믿지 않는다 · 클래스 이름은 파일명(<testsuite name> 은 @DisplayName 일 수 있다)', () => {
   const dir = dodTestsRepo({
     suites: [{ name: 'com.x.FeeTest', tests: 3, display: '수수료 계산 — 기본료' }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1, display: '취소된 주문' }, { name: 'com.x.OtherTest', tests: 9 }],
     files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/a/y.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
@@ -387,7 +396,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
   ];
   setDod(dir, dod);
   edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
-  const r = gate(dir, '--commit');
+  const r = gate(dir, '--full');
   assert.equal(r.status, 0, r.stderr);
   let s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'PASS', 'PASS']);
@@ -399,7 +408,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
 
   // 위반 주입 ① 어디에도 안 걸리는 선택 → 그 항목만 FAIL(분모 0) · 러너는 여전히 스택당 한 번
   setDod(dir, [...dod, { id: 'D5', text: '없는 클래스', tests: { stack: 'be', select: ['*MissingTest*'] }, last: 'PENDING' }]);
-  assert.equal(gate(dir, '--commit').status, 1);
+  assert.equal(gate(dir, '--full').status, 1);
   s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'PASS', 'PASS', 'FAIL']);
   assert.equal(runnerCalls(dir, 'backend').length, 2);
@@ -408,7 +417,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
   // 위반 주입 ② 한 스위트 실패 → 그 항목만 FAIL(배치 exit 1 이어도 다른 항목은 이번 실행 결과로 PASS)
   setDod(dir, dod);
   setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1, display: '수수료 계산 — 기본료' }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
-  assert.equal(gate(dir, '--commit').status, 1);
+  assert.equal(gate(dir, '--full').status, 1);
   s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['FAIL', 'PASS', 'PASS', 'PASS']);
   assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*실패 1건: com\.x\.FeeTest/);
@@ -416,7 +425,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
   // 위반 주입 ③ 통과 건수가 하한 미달 → FAIL
   setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OrderTest$Nested', tests: 1 }] });
   setDod(dir, dod.map(d => (d.id === 'D3' ? { ...d, expect: { min_tests: 5 } } : d)));
-  assert.equal(gate(dir, '--commit').status, 1);
+  assert.equal(gate(dir, '--full').status, 1);
   s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS', 'FAIL', 'PASS']);
   assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D3 \[fe 배치\].*통과 4건 < 5/);
@@ -427,7 +436,7 @@ test('DoD tests: 경량 게이트는 스택마다 러너를 한 번만 띄우고
   const old = new Date(Date.now() - 3600_000);
   for (const f of readdirSync(xmlDir)) utimesSync(join(xmlDir, f), old, old);
   setRunner(dir, 'backend', { compile_error: true });
-  assert.equal(gate(dir, '--commit').status, 1);
+  assert.equal(gate(dir, '--full').status, 1);
   s = readState(stateFile(dir));
   assert.deepEqual(s.dod.map(d => d.last), ['FAIL', 'FAIL', 'PASS', 'PASS'], '지난 XML(통과)을 이번 결과로 읽지 않는다');
   assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*배치 exit 1 — 이번 실행 결과 없음/);
@@ -460,6 +469,75 @@ test('DoD tests 전량: 스택 test 명령이 dod_tests.run 과 같으면 그 �
   assert.match(log, /dod D3 \[fe 전량 test 리포트\] .* → PASS/);
 });
 
+test('전량: DoD 프로브가 스택 단계보다 먼저 돌고, FAIL 이면 스택 단계·DoD tests 를 건너뛴다(NOT_RUN) · 이번에 판정하지 않은 항목의 지난 판정은 그대로', () => {
+  const dir = dodTestsRepo({ full: true, suites: [{ name: 'com.x.FeeTest', tests: 3 }], files: [{ name: 'src/a/x.spec.js', passed: 2 }] });
+  const fee = { id: 'D2', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PASS', at: '2026-10-01T00:00:00.000Z' };
+  setDod(dir, [{ id: 'D1', text: '위반 주입', probe: 'echo nothing-fired', cwd: 'backend', expect: { pattern: 'INJECTION_FIRED' }, last: 'PENDING' }, fee]);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  assert.equal(gate(dir, '--full').status, 1);
+  let s = readState(stateFile(dir));
+  assert.equal(s.gate.results.dod, 'FAIL');
+  for (const k of ['compile', 'lint', 'build', 'test', 'extra']) assert.equal(s.gate.results[k], 'NOT_RUN', `${k} 는 건너뛴다`);
+  assert.equal(s.gate.stacks.be.test, 'NOT_RUN');
+  assert.ok(!existsSync(join(dir, 'backend/.fake-runner.log')), '스택 test 도 DoD 배치도 러너를 띄우지 않았다');
+  assert.deepEqual(s.dod.map(d => [d.last, d.at ?? null]).slice(1), [['PASS', '2026-10-01T00:00:00.000Z']], 'D2 는 이번에 판정하지 않았다');
+  let log = readFileSync(join(dir, s.gate.log), 'utf8');
+  assert.match(log, /스택 단계 건너뜀 — DoD 프로브 FAIL 1건/);
+  assert.doesNotMatch(log, /^## be\.compile /m);
+  g(dir, 'commit', '-q', '-m', 'code'); addReview(dir);
+  const h = hook(dir, 'git push');
+  assert.equal(h.decision, 'deny'); assert.ok(h.reason.includes('GATE_FAIL') && h.reason.includes('dod=FAIL'), h.reason);
+
+  // 프로브를 고치면 스택 단계 → DoD tests(test 리포트) 까지 돈다
+  setDod(dir, [{ id: 'D1', text: '위반 주입', probe: 'echo INJECTION_FIRED', cwd: 'backend', expect: { pattern: 'INJECTION_FIRED' }, last: 'FAIL' }, fee]);
+  assert.equal(gate(dir, '--full').status, 0);
+  s = readState(stateFile(dir));
+  assert.equal(s.gate.results.test, 'PASS'); assert.deepEqual(s.dod.map(d => d.last), ['PASS', 'PASS']);
+  assert.notEqual(s.dod[1].at, '2026-10-01T00:00:00.000Z', '이번엔 D2 도 판정했다');
+  log = readFileSync(join(dir, s.gate.log), 'utf8');
+  assert.ok(log.indexOf('## dod D1 $') < log.indexOf('## be.compile $'), 'DoD 프로브가 스택 단계보다 먼저');
+  assert.match(log, /dod D2 \[be 전량 test 리포트\] .* → PASS/);
+});
+
+test('전량 --stacks: 브랜치가 바꾼 스택(커밋·작업트리)을 빼면 exit 2·기록 없음 · 바뀐 스택만 돌면 push 된다 · 문서만 바뀐 스택은 요구하지 않는다', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  edit(dir, 'frontend/app.js', 'export default 2\n'); g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'fe');
+  mkdirSync(join(dir, 'backend/notes'), { recursive: true });
+  edit(dir, 'backend/notes/NOTE.md', '# note\n'); g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'be docs');
+  const ok = gate(dir, '--full', '--stacks', 'fe', '--json');
+  assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+  const st = readState(stateFile(dir));
+  assert.deepEqual(Object.keys(st.gate.stacks), ['fe']);
+  addReview(dir);
+  assert.equal(hook(dir, 'git push').decision, 'pass', 'FE 만 바꾼 브랜치는 FE 한정 전량으로 push 된다');
+
+  edit(dir, 'backend/App.java', 'class App { int y; }\n'); g(dir, 'add', '-A'); // 아직 커밋 안 한 BE 변경
+  const dirty = gate(dir, '--full', '--stacks', 'fe');
+  assert.equal(dirty.status, 2);
+  assert.match(dirty.stderr, /--stacks 가 이 브랜치에서 바뀐 스택을 뺐다: be/);
+  g(dir, 'commit', '-q', '-m', 'be');
+  const committed = gate(dir, '--full', '--stacks', 'fe');
+  assert.equal(committed.status, 2, '커밋된 BE 변경도 센다');
+  assert.equal(readState(stateFile(dir)).gate.at, st.gate.at, '거부된 실행은 기록을 남기지 않는다');
+  assert.equal(gate(dir, '--full', '--stacks', 'fe,be').status, 0);
+});
+
+test('이름 바꾸기: 코드 파일을 docs 로 옮겨도 docs-only 로 통과하지 않는다 — 옛 경로까지 센다(commit·경량 게이트 스택·push)', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  g(dir, 'mv', 'backend/App.java', 'docs/App.md');
+  const c = hook(dir, 'git commit -m x');
+  assert.equal(c.decision, 'deny', c.reason); assert.ok(c.reason.includes('NO_GATE'), c.reason);
+  assert.equal(gate(dir, '--commit').status, 0);
+  assert.ok('be' in readState(stateFile(dir)).gate.stacks, '경량 게이트도 옛 경로의 스택을 건드린 것으로 본다');
+  g(dir, 'commit', '-q', '-m', 'mv');
+  const p = hook(dir, 'git push');
+  assert.equal(p.decision, 'deny', p.reason); assert.ok(p.reason.includes('GATE_LEVEL'), p.reason);
+});
+
 test('게이트 도중 다른 경로가 쓴 상태(리뷰 기록)를 게이트 종료가 덮어쓰지 않는다 — 쓰기 직전에 다시 읽고 gate·history·DoD 판정만 얹는다', () => {
   const dir = makeRepo();
   g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
@@ -476,11 +554,11 @@ console.log('REVIEW_WRITTEN');
   st.dod = [{ id: 'D1', text: '게이트 도중 리뷰 기록', probe: 'node write-review.mjs', cwd: 'backend', expect: { pattern: 'REVIEW_WRITTEN' }, last: 'PENDING' }];
   writeState(stateFile(dir), st);
   edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
-  assert.equal(gate(dir, '--commit').status, 0);
+  assert.equal(gate(dir, '--full').status, 0);
   const s = readState(stateFile(dir));
   assert.equal(s.review?.round, 7, '게이트가 시작 때 읽은 사본으로 리뷰 기록을 덮어썼다');
   assert.equal(s.review.delta_passes, 2);
-  assert.equal(s.gate.level, 'commit');
+  assert.equal(s.gate.level, 'full');
   assert.equal(s.dod[0].last, 'PASS', 'DoD 판정은 얹힌다');
   assert.ok(s.history.some(h => h.stage === 'gate'));
 });
