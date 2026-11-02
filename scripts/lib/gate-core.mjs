@@ -10,6 +10,18 @@ import { fingerprintTree } from './tree.mjs';
 
 const OK = new Set(['PASS', 'SKIPPED']);
 
+/** 게이트 단계별로 통과해야 하는 결과 키 — gate.mjs 의 overall 과 훅·마감 판정이 같은 표를 본다 */
+export const REQUIRED_KEYS = Object.freeze({
+  commit: ['compile', 'lint'],
+  related: ['compile', 'lint', 'test', 'dod'], // build·extra·전체 테스트는 기본 브랜치 배치(gate.mjs --main)
+  full: ['compile', 'lint', 'build', 'test', 'extra', 'dod'],
+  main: ['compile', 'lint', 'build', 'test', 'extra'],
+});
+
+/** push·complete 가 받아 주는 게이트 단계 — gate.push_level=related 면 관련 테스트 게이트도, 아니면 전량만 */
+export function pushLevels(cfg) { return cfg.gate?.push_level === 'related' ? ['related', 'full'] : ['full']; }
+export function pushGateCommand(cfg) { return cfg.gate?.push_level === 'related' ? 'gate.mjs --related' : 'gate.mjs --full'; }
+
 /** 훅이 판정하는 셸 툴. hooks/hooks.json 의 matcher 와 항상 같은 집합이어야 한다(gate.test 가 대조) — 한쪽만 보면 다른 쪽 셸로 커밋할 때 게이트가 아예 안 돈다. */
 export const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 
@@ -117,16 +129,14 @@ export function decide(op, cwd, opts = {}) {
 
   // 게이트 기록
   const g = state.gate;
-  const need = op === 'commit' ? 'gate.mjs --commit' : 'gate.mjs --full';
+  const need = op === 'commit' ? 'gate.mjs --commit' : pushGateCommand(cfg);
   if (!g) return deny('NO_GATE', `게이트 기록 없음 — ${need} 를 먼저 실행할 것`);
-  if (op === 'push' && g.level !== 'full') return deny('GATE_LEVEL', `push 는 전량 게이트가 필요하다(기록은 ${g.level}) — gate.mjs --full`);
+  if (op === 'push' && !pushLevels(cfg).includes(g.level)) return deny('GATE_LEVEL', `push 는 ${pushLevels(cfg).join('·')} 게이트가 필요하다(기록은 ${g.level}) — ${need}`);
   const gt = treeAccepted(g.tree, tree, cfg, root);
   if (!gt.ok) return deny('GATE_STALE', `게이트 기록 이후 코드가 바뀌었다(${gt.changed ? gt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — ${need} 재실행`);
   const r = g.results ?? {};
-  // DoD 는 전량 게이트에서만 돈다 — 커밋은 compile·lint, push 는 거기에 build·test·extra·dod
-  const mustCommit = ['compile', 'lint'];
-  const mustPush = ['build', 'test', 'extra', 'dod'];
-  const bad = (op === 'commit' ? mustCommit : [...mustCommit, ...mustPush]).filter(k => !OK.has(r[k] ?? 'NOT_RUN'));
+  // DoD 는 push 전제 게이트에서만 돈다 — 커밋은 compile·lint, push 는 그 기록 단계의 필수 키 전부(전량: build·test·extra·dod · 관련: test·dod)
+  const bad = (op === 'commit' ? REQUIRED_KEYS.commit : REQUIRED_KEYS[g.level] ?? REQUIRED_KEYS.full).filter(k => !OK.has(r[k] ?? 'NOT_RUN'));
   if (bad.length) return deny('GATE_FAIL', `게이트 결과 미통과: ${bad.map(k => `${k}=${r[k] ?? 'NOT_RUN'}`).join(' · ')} — ${need}`);
   if (g.log) {
     const logFile = join(proj.configRoot, g.log);

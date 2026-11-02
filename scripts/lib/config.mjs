@@ -20,7 +20,7 @@ export const DEFAULTS = Object.freeze({
   wiki: { index: 'docs/INDEX.md', log: 'docs/LOG.md', schema: 'docs/INDEX-SCHEMA.md', dev_guide: 'docs/{KEY}-dev-guide.md', synthesis_dir: null, max_pages_per_closure: 3, claude_md_max_lines: 150 },
   jira: { start_transition: 'In Progress', done_transition: 'QA', comment_lang: 'ko' },
   subtasks: { match: null },
-  gate: { timeout_s: 1800, commit_budget_s: 180 },
+  gate: { timeout_s: 1800, commit_budget_s: 180, push_level: 'full' },
 });
 
 /**

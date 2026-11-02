@@ -85,7 +85,8 @@
       "type": ["object", "null"],
       "required": ["level", "tree", "results", "at"],
       "properties": {
-        "level": { "type": "string", "enum": ["commit", "full"] },
+        "level": { "type": "string", "enum": ["commit", "related", "full"], "description": "commit=경량 · related=관련 테스트(gate.push_level=related 의 push 전제) · full=전량" },
+        "related": { "type": "object", "description": "related 게이트의 스택별 선택 — {mode: selected|full|none, selected, tests, failed, reason}" },
         "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "git write-tree(인덱스 트리) id" },
         "results": {
           "type": "object",

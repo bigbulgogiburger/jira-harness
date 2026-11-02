@@ -52,7 +52,7 @@ node <caseworker>/scripts/build-codex.mjs --src . --out <jira-harness_codex>
 | `skills/grilling` `grill-me` `jira-create` `kb-ingest` | 결정 인터뷰 · 이슈 생성 · 지식 wiki ingest |
 | `workflows/plan.js` `implement.js` `verify.js` `recon.js` | Workflow 툴로 도는 다중 에이전트 단계(모든 레인에 model 명시) |
 | `hooks/hooks.json` → `scripts/commit-gate.mjs` | PreToolUse(Bash\|PowerShell) 훅 — 게이트·리뷰 기록이 커밋될 트리와 같을 때만 commit/push 허용. `git commit … && git push` 처럼 한 명령에 둘이 있으면 둘 다 판정한다 |
-| `scripts/gate.mjs` | 경량(컴파일·린트) / 전량(DoD 프로브 → 빌드·테스트·extra → DoD tests) 게이트 러너 — DoD 는 전량에서만 돌고, 프로브가 하나라도 FAIL 이면 스택 단계를 건너뛴다 · DoD `tests` 항목은 스택별 1회 배치(`stacks.<name>.dod_tests`, test 리포트에 걸리면 재사용) · `--full --stacks` 는 브랜치가 바꾼 스택을 뺄 수 없다 · 트리 id 와 로그 sha256 을 기록 |
+| `scripts/gate.mjs` | 경량(컴파일·린트) / **관련 테스트**(`--related` — 바뀐 스택의 컴파일·린트·관련 테스트·DoD · `gate.push_level=related` 의 push 전제) / 전량(DoD 프로브 → 빌드·테스트·extra → DoD tests) / **main 배치**(`--main` — 기본 브랜치에서 여러 이슈 머지 뒤 전체 스위트 1회 · `main-gate.json`) 게이트 러너 — DoD 는 전량에서만 돌고, 프로브가 하나라도 FAIL 이면 스택 단계를 건너뛴다 · DoD `tests` 항목은 스택별 1회 배치(`stacks.<name>.dod_tests`, test 리포트에 걸리면 재사용) · `--full --stacks` 는 브랜치가 바꾼 스택을 뺄 수 없다 · 트리 id 와 로그 sha256 을 기록 |
 | `scripts/issue-start.mjs` `issue-set.mjs` `issue-complete.mjs` | 브랜치·상태 JSON 생명주기 |
 | `scripts/safe-commit.mjs` | 훅이 발화하지 않는 경로(헤드리스·무인)에서 같은 판정 후 커밋 |
 | `scripts/codex-review.sh` | Codex CLI 리뷰 래퍼(본문 끝으로 판정, 한도 소진을 감추지 않음) |

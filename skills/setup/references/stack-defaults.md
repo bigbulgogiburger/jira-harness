@@ -11,7 +11,7 @@
 | build | `./gradlew build -x test` | — |
 | test | `./gradlew test` | **`--no-daemon` 금지** — 데몬 없이 돌리면 일부 Mockito 설정(inline mock maker 등)이 깨진다는 사례가 보고돼 있다. 데몬은 기본값 그대로 둔다 |
 | extra | 프로젝트 정적 게이트(디자인 토큰 검사 등)가 있으면 여기 | — |
-| dod_tests | `{ "adapter": "gradle-junit", "run": "./gradlew test" }` | DoD `tests` 항목을 **한 번에** 돌린다(`--tests` 합집합 1회 → JUnit XML 로 항목마다 판정). 없으면 항목마다 gradle 을 새로 띄운다. XML 위치가 기본(`build/test-results/test`)과 다르면 `reports` |
+| dod_tests | `{ "adapter": "gradle-junit", "run": "./gradlew test" }` | DoD `tests` 항목을 **한 번에** 돌린다(`--tests` 합집합 1회 → JUnit XML 로 항목마다 판정). 없으면 항목마다 gradle 을 새로 띄운다. XML 위치가 기본(`build/test-results/test`)과 다르면 `reports`. **관련 테스트 게이트(`gate.push_level=related`)도 이 어댑터로 고른다** — 바뀐 클래스를 쓰는 테스트 클래스만 `--tests` 로. 전체로 넘기는 전역 파일 기본값은 `build.gradle*`·`settings.gradle*`·`gradle.properties`·`gradle/**`·`src/main/resources/**`·`src/test/resources/**`(`related.fallback_full` 로 덮어쓴다) |
 
 ## npm/Vite/Vue CLI (프론트엔드)
 
@@ -22,7 +22,7 @@
 | build | `npm run build` | 스크립트 이름이 `build`/`build:qa`/`build:prod` 라도 **모드 인자가 곧 산출물 종류는 아니다** — 별도 production 전용 스크립트가 있는지 `package.json` 확인 |
 | test | `npx vitest run` | **`vitest` 단독(watch 모드) 금지** — 헤드리스 게이트에서 종료하지 않고 걸린다. 반드시 `run` 서브커맨드 |
 | extra | e2e/visual 스위트가 있으면 여기(무겁다 — `--full` 전용) | — |
-| dod_tests | `{ "adapter": "vitest", "run": "npx vitest run" }`(vitest 일 때) | 경로 필터 합집합 1회 + JSON 리포터로 항목마다 판정. `run` 은 **test 명령과 글자까지 같게** 둔다 — 같으면 전량 게이트가 test 단계 리포트로 DoD 를 판정하고 다시 돌리지 않는다 |
+| dod_tests | `{ "adapter": "vitest", "run": "npx vitest run" }`(vitest 일 때) | 경로 필터 합집합 1회 + JSON 리포터로 항목마다 판정. `run` 은 **test 명령과 글자까지 같게** 둔다 — 같으면 전량 게이트가 test 단계 리포트로 DoD 를 판정하고 다시 돌리지 않는다. 관련 테스트 게이트는 `run` 의 `vitest run` 을 `vitest related --run --passWithNoTests <바뀐 파일>` 로 바꿔 돈다 — `run` 이 그 꼴이 아니면 `related.command`(`{files}` 자리) 필요 |
 
 ## Python (pytest 계열)
 

@@ -302,7 +302,7 @@ test('DoD 프로브: 경량 게이트는 DoD 를 돌리지 않는다 · 전량�
   const c = gate(dir, '--commit', '--json');
   assert.equal(c.status, 0, c.stderr + c.stdout);
   let s = readState(stateFile(dir));
-  assert.equal(s.gate.results.dod, 'NOT_RUN'); assert.equal(s.dod[0].last, 'PENDING'); assert.equal(s.gate.dod, '전량 게이트에서');
+  assert.equal(s.gate.results.dod, 'NOT_RUN'); assert.equal(s.dod[0].last, 'PENDING'); assert.equal(s.gate.dod, 'push 전 게이트에서');
   addReview(dir);
   assert.equal(hook(dir, 'git commit -m x').decision, 'pass');
   g(dir, 'commit', '-q', '-m', 'code');

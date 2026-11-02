@@ -2,8 +2,13 @@
 // gate.mjs — 게이트 러너. 브랜치 상태 JSON 의 gate 기록을 쓰는 유일한 경로.
 //   --commit : 경량(건드린 스택의 compile·lint) — 목표 ≤ gate.commit_budget_s. DoD 는 돌리지 않는다 — 커밋마다 DoD 를 전부 다시 돌린 것이
 //              경량 게이트 시간의 86%였다(2026-10-12 실측: 171회 15.0시간 중 12.9시간). DoD 는 전량 게이트에서 한 번 돈다.
-//   --full   : 전량(DoD 프로브 → 모든 스택의 compile·lint·build·test·extra → DoD tests 항목) — push/complete 전제.
+//   --full   : 전량(DoD 프로브 → 모든 스택의 compile·lint·build·test·extra → DoD tests 항목) — push/complete 전제(gate.push_level=full · 기본).
 //              DoD 프로브가 하나라도 FAIL 이면 스택 단계를 건너뛰고 끝낸다 — 늦게 발견된 DoD 실패가 전체 테스트를 헛돌게 하지 않는다.
+//   --related: 관련 테스트(DoD 프로브 → 이 브랜치가 바꾼 스택의 compile·lint·**관련 테스트** → DoD tests 항목) — gate.push_level=related 일 때의
+//              push/complete 전제. 선택은 lib/related-tests.mjs(바뀐 클래스를 쓰는 테스트 · vitest related · 전역 파일이 바뀌면 그 스택 전체).
+//              build·extra·전체 테스트는 --main 이 머지 뒤 한 번에 돈다 — 이슈마다 1시간짜리 전체 스위트를 돌리지 않는다.
+//   --main   : 기본 브랜치 배치 전량(모든 스택의 compile·lint·build·test·extra) — 여러 이슈를 머지한 뒤 1회. 이슈 상태 JSON 이 아니라
+//              <runtime>/main-gate.json 에 기록한다(head·결과·직전 PASS 이후 커밋). --main --status 는 기록만 읽는다.
 // 옵션: --stage-all(git add -A 후 검증) · --dry-run(계획만) · --stacks a,b · --cwd <dir> · --json
 //      --full 의 --stacks 는 이 브랜치가 바꾼 스택을 뺄 수 없다(빼면 그 스택을 검증한 것처럼 기록이 남는다).
 // 지문 = 실행 전 인덱스 트리(런타임 경로 제외). 실행 중 인덱스가 바뀌면 기록하지 않는다.
@@ -20,13 +25,15 @@ import { parseTestCount, stripAnsi } from './lib/probe.mjs';
 import { resolveShell as resolveShellLib } from './lib/shell.mjs';
 import { herdrPing } from './lib/herdr.mjs';
 import { batchCommand, collectEntries, judgeTests, vitestReportArgs } from './lib/dod-tests.mjs';
+import { selectRelated, relatedCommand } from './lib/related-tests.mjs';
+import { REQUIRED_KEYS } from './lib/gate-core.mjs';
 
 // ---------- 인자 ----------
 const argv = process.argv.slice(2);
 const flag = n => argv.includes(n);
 const opt = n => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
-const level = flag('--full') ? 'full' : flag('--commit') ? 'commit' : null;
-if (!level) fail(2, '사용법: gate.mjs --commit | --full [--stage-all] [--dry-run] [--stacks a,b] [--cwd <dir>] [--json]');
+const level = flag('--main') ? 'main' : flag('--full') ? 'full' : flag('--related') ? 'related' : flag('--commit') ? 'commit' : null;
+if (!level) fail(2, '사용법: gate.mjs --commit | --related | --full | --main [--status] [--stage-all] [--dry-run] [--stacks a,b] [--cwd <dir>] [--json]');
 const json = flag('--json');
 const cwd = resolve(opt('--cwd') ?? process.cwd());
 
@@ -66,6 +73,7 @@ let cfg; try { cfg = loadConfig(proj.configPath); } catch (e) { fail(2, `harness
 const root = proj.toplevel;
 const configRoot = proj.configRoot;
 const branch = currentBranch(root);
+if (level === 'main') runMainGate(); // 이슈 상태와 무관한 경로 — 끝나면 프로세스를 끝낸다
 const parsed = parseBranch(branch, cfg);
 if (!parsed && !flag('--dry-run')) fail(2, `브랜치 "${branch ?? '(detached)'}" 가 branch_pattern 밖이다`);
 const sPath = statePath(cfg, configRoot, parsed ? parsed.slug : 'dry-run'); // dry-run 은 상태·브랜치 없이도 계획만 보여준다(setup check 가 이슈 전에 부른다)
@@ -76,19 +84,22 @@ if (flag('--stage-all')) git(['add', '-A'], { cwd: root });
 
 const changed = [...new Set([...stagedFiles(root), ...changedVsHead(root), ...untrackedFiles(root)])];
 const wanted = opt('--stacks') ? opt('--stacks').split(',').map(s => s.trim()).filter(Boolean) : null;
-let stackNames = wanted ?? (level === 'full' ? Object.keys(cfg.stacks) : stacksTouched(changed, cfg));
+// 관련 테스트 게이트는 "이 브랜치가 바꾼 것" 전체(커밋된 것 + 작업트리)를 본다 — 마지막 커밋만 보면 앞 커밋의 변경이 빠진다
+const branchFiles = level === 'related' || (level === 'full' && wanted) ? branchChangedFiles(root, cfg.default_branch) : null;
+const branchCode = branchFiles ? [...new Set([...branchFiles, ...changed])].filter(p => !matchesAny(p, cfg.docs_only_paths)) : null;
+if (level === 'related' && !branchFiles) fail(2, `${cfg.default_branch} 와의 merge-base 를 못 구해 관련 테스트를 고를 수 없다 — --full 로 돌릴 것`);
+let stackNames = wanted ?? (level === 'full' ? Object.keys(cfg.stacks) : level === 'related' ? stacksTouched(branchCode, cfg) : stacksTouched(changed, cfg));
 for (const n of stackNames) if (!cfg.stacks[n]) fail(2, `알 수 없는 스택 "${n}" (harness.json.stacks: ${Object.keys(cfg.stacks).join(', ')})`);
-if (level === 'full' && wanted) {
-  // push·complete 는 전량 기록의 결과만 보고 어느 스택이 돌았는지는 보지 않는다 — 바뀐 스택을 뺀 --stacks 는 기록을 남기기 전에 여기서 막는다
-  const branchFiles = branchChangedFiles(root, cfg.default_branch);
-  if (!branchFiles) fail(2, `${cfg.default_branch} 와의 merge-base 를 못 구해 --stacks 를 검증할 수 없다 — --stacks 없이 돌릴 것`);
-  const code = [...branchFiles, ...changed].filter(p => !matchesAny(p, cfg.docs_only_paths));
-  const missing = stacksTouched(code, cfg).filter(n => !wanted.includes(n));
-  if (missing.length) fail(2, `--stacks 가 이 브랜치에서 바뀐 스택을 뺐다: ${missing.join(', ')} — 전량 게이트는 바뀐 스택을 모두 돌아야 한다(--stacks ${[...wanted, ...missing].join(',')} 또는 --stacks 없이)`);
+if ((level === 'full' || level === 'related') && wanted) {
+  // push·complete 는 기록의 결과만 보고 어느 스택이 돌았는지는 보지 않는다 — 바뀐 스택을 뺀 --stacks 는 기록을 남기기 전에 여기서 막는다
+  if (!branchCode) fail(2, `${cfg.default_branch} 와의 merge-base 를 못 구해 --stacks 를 검증할 수 없다 — --stacks 없이 돌릴 것`);
+  const missing = stacksTouched(branchCode, cfg).filter(n => !wanted.includes(n));
+  if (missing.length) fail(2, `--stacks 가 이 브랜치에서 바뀐 스택을 뺐다: ${missing.join(', ')} — ${level} 게이트는 바뀐 스택을 모두 돌아야 한다(--stacks ${[...wanted, ...missing].join(',')} 또는 --stacks 없이)`);
 }
-const steps = level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra'] : ['compile', 'lint'];
-// DoD 는 전량 게이트에서만 돈다 — 경량(커밋) 게이트는 compile·lint 만 본다
-const dodItems = level === 'full' ? ((state && state.dod) || []) : [];
+const steps = level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra'] : level === 'related' ? ['compile', 'lint', 'test'] : ['compile', 'lint'];
+// DoD 는 push 전제 게이트(전량·관련 테스트)에서만 돈다 — 경량(커밋) 게이트는 compile·lint 만 본다
+const pushLevel = level === 'full' || level === 'related';
+const dodItems = pushLevel ? ((state && state.dod) || []) : [];
 const probes = dodItems.filter(d => (d.probe || d.tests) && !d.human);
 const humans = dodItems.filter(d => d.human || (!d.probe && !d.tests));
 // 구조화 테스트 항목 — 그 스택에 dod_tests 어댑터가 있을 때만. 없으면 probe 문자열로 돌고, probe 도 없으면 FAIL
@@ -97,9 +108,23 @@ const probeItems = probes.filter(d => !testItems.includes(d));
 const byStack = new Map();
 for (const d of testItems) byStack.set(d.tests.stack, [...(byStack.get(d.tests.stack) ?? []), d]);
 
+/** 관련 테스트 게이트의 스택 test 단계 — {mode, select, reason, cmd} · cmd=null 이면 돌 것이 없다 */
+function relatedPlan(name) {
+  const s = cfg.stacks[name];
+  if (!s.test) return { mode: 'none', select: [], reason: 'test 명령 없음', cmd: null };
+  const dt = s.dod_tests;
+  if (!dt) return { mode: 'full', select: [], reason: 'dod_tests 어댑터가 없어 관련 테스트를 고를 수 없다 → 전체 테스트', cmd: s.test };
+  const prefix = s.dir === '.' ? '' : s.dir.replace(/\/$/, '') + '/';
+  const files = branchCode.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length));
+  const r = selectRelated({ adapter: dt.adapter, stackDir: resolve(root, s.dir), files, related: s.related });
+  const cmd = r.mode === 'full' ? s.test : r.mode === 'selected' ? relatedCommand({ adapter: dt.adapter, run: dt.run, select: r.select, related: s.related }) : null;
+  return { ...r, cmd };
+}
+const relatedPlans = level === 'related' ? Object.fromEntries(stackNames.map(n => [n, relatedPlan(n)])) : {};
+
 if (flag('--dry-run')) {
   const dodBatches = Object.fromEntries([...byStack].map(([n, items]) => [n, { ids: items.map(d => d.id), cmd: batchCommand(cfg.stacks[n].dod_tests, items.flatMap(d => d.tests.select), `<runtime>/gate/<slug>-${n}-dod.vitest.json`) }]));
-  const plan = { level, branch, keys: parsed ? parsed.keys : [], changed_files: changed.length, stacks: Object.fromEntries(stackNames.map(n => [n, Object.fromEntries(steps.map(s => [s, cfg.stacks[n][s] ?? null]))])), dod_probes: probes.map(d => ({ id: d.id, probe: d.probe ?? null, tests: d.tests ?? null, cwd: d.cwd ?? null })), dod_batches: dodBatches, dod_human: humans.map(d => d.id), shell: resolveShell(cfg).name };
+  const plan = { level, branch, keys: parsed ? parsed.keys : [], changed_files: changed.length, stacks: Object.fromEntries(stackNames.map(n => [n, Object.fromEntries(steps.map(s => [s, s === 'test' && level === 'related' ? relatedPlans[n].cmd : cfg.stacks[n][s] ?? null]))])), related: level === 'related' ? Object.fromEntries(Object.entries(relatedPlans).map(([n, r]) => [n, { mode: r.mode, reason: r.reason, selected: r.select.length }])) : undefined, dod_probes: probes.map(d => ({ id: d.id, probe: d.probe ?? null, tests: d.tests ?? null, cwd: d.cwd ?? null })), dod_batches: dodBatches, dod_human: humans.map(d => d.id), shell: resolveShell(cfg).name };
   console.log(json ? JSON.stringify(plan, null, 2) : `[gate] dry-run ${level}\n` + JSON.stringify(plan, null, 2));
   process.exit(0);
 }
@@ -108,8 +133,8 @@ const shell = resolveShell(cfg);
 const tree = fingerprintTree({ cwd: root, base: 'index', excludes: cfg.fingerprint_exclude });
 const OKSET = new Set(['PASS', 'SKIPPED']);
 const prev = state.gate;
-if (level === 'commit' && prev && prev.level === 'full' && prev.tree === tree && Object.values(prev.results ?? {}).every(v => OKSET.has(v))) {
-  console.log(`[gate] 같은 트리(${tree.slice(0, 12)})가 이미 전량 게이트를 통과했다(${prev.at}) — 재실행 생략`);
+if (level === 'commit' && prev && (prev.level === 'full' || prev.level === 'related') && prev.tree === tree && ['compile', 'lint'].every(k => OKSET.has(prev.results?.[k] ?? 'NOT_RUN'))) {
+  console.log(`[gate] 같은 트리(${tree.slice(0, 12)})가 이미 ${prev.level} 게이트를 통과했다(${prev.at}) — 재실행 생략`);
   process.exit(0);
 }
 
@@ -120,7 +145,9 @@ const perKey = { compile: [], lint: [], build: [], test: [], extra: [] };
 const stacksOut = {};
 const logDir = join(configRoot, cfg.runtime_dir, 'gate');
 mkdirSync(logDir, { recursive: true });
-const harvest = {}; // 전량: 스택 test 단계의 리포트 — DoD 테스트 항목을 다시 돌리지 않고 여기서 판정한다
+const harvest = {}; // 전량·관련: 스택 test 단계의 리포트 — DoD 테스트 항목을 다시 돌리지 않고 여기서 판정한다
+const relatedOut = {}; // 관련 테스트: 스택별 {mode, selected, tests, failed, reason} — 기록·요약에 남겨 "검사 0" 을 드러낸다
+for (const [n, r] of Object.entries(relatedPlans)) relatedOut[n] = { mode: r.mode, selected: r.select.length, tests: 0, failed: 0, reason: r.reason };
 
 let dodPass = 0, dodFail = 0;
 const judgedNow = new Set(); // 이번 실행이 판정한 DoD 항목 — 상태에 얹는 것은 이것뿐이다
@@ -158,12 +185,15 @@ for (const name of stackNames) {
   stacksOut[name] = {};
   for (const step of steps) {
     if (probeFailed) { stacksOut[name][step] = 'NOT_RUN'; continue; }
-    let cmds = step === 'extra' ? (s.extra ?? []) : (s[step] ? [s[step]] : []);
+    const rp = level === 'related' && step === 'test' ? relatedPlans[name] : null;
+    if (rp) logChunks.push(`\n## ${name}.related mode=${rp.mode} selected=${rp.select.length} — ${rp.reason}\n${rp.select.slice(0, 400).join('\n')}\n`);
+    let cmds = rp ? (rp.cmd ? [rp.cmd] : []) : step === 'extra' ? (s.extra ?? []) : (s[step] ? [s[step]] : []);
     if (!cmds.length) { stacksOut[name][step] = 'SKIPPED'; perKey[step].push('SKIPPED'); continue; }
     // test 명령이 DoD 어댑터의 run 과 같을 때만 거둔다(다른 명령이면 리포트가 같은 모집단이라는 보장이 없다) — vitest 는 JSON 리포터를 덧붙인다
+    // 관련 테스트는 게이트가 어댑터로 만든 명령이라 리포트 모양이 같다 — 거두어 DoD 판정과 "관련 테스트 N건" 에 쓴다
     const dt = s.dod_tests;
-    const reuse = level === 'full' && step === 'test' && byStack.has(name) && cmds.length === 1 && cmds[0].trim() === dt.run.trim();
-    const reportPath = reuse && dt.adapter === 'vitest' ? join(logDir, `${parsed.slug}-${name}-full.vitest.json`) : null;
+    const reuse = step === 'test' && !!dt && ((level === 'full' && byStack.has(name) && cmds.length === 1 && cmds[0].trim() === dt.run.trim()) || (rp && rp.mode !== 'none' && (rp.mode === 'selected' || cmds[0].trim() === dt.run.trim())));
+    const reportPath = reuse && dt.adapter === 'vitest' ? join(logDir, `${parsed.slug}-${name}-${level}.vitest.json`) : null;
     if (reportPath) { rmSync(reportPath, { force: true }); cmds = [cmds[0] + vitestReportArgs(reportPath)]; }
     const since = Date.now();
     let verdict = 'PASS', lastExit = 0;
@@ -175,6 +205,10 @@ for (const name of stackNames) {
       if (r.status !== 0) { verdict = 'FAIL'; console.error(`[gate] ${name}.${step} FAIL (exit ${r.status}${r.timedOut ? ', timeout' : ''})`); break; }
     }
     if (reuse) harvest[name] = collectEntries(dt, dir, { reportPath, exit: lastExit, since });
+    if (rp) {
+      const got = harvest[name] ?? [];
+      relatedOut[name] = { mode: rp.mode, selected: rp.select.length, tests: got.reduce((n, e) => n + e.passed + e.failed, 0), failed: got.reduce((n, e) => n + e.failed, 0), reason: rp.reason };
+    }
     stacksOut[name][step] = verdict;
     perKey[step].push(verdict);
   }
@@ -211,8 +245,8 @@ if (!probeFailed) for (const [name, items] of byStack) {
   }
 }
 
-if (level === 'full') results.dod = dodFail ? 'FAIL' : dodPass ? 'PASS' : 'SKIPPED';
-const dodSummary = level === 'full' ? `${dodPass}/${probes.length}${humans.length ? ` (human ${humans.length} 제외)` : ''}` : '전량 게이트에서';
+if (pushLevel) results.dod = dodFail ? 'FAIL' : dodPass ? 'PASS' : 'SKIPPED';
+const dodSummary = pushLevel ? `${dodPass}/${probes.length}${humans.length ? ` (human ${humans.length} 제외)` : ''}` : 'push 전 게이트에서';
 
 // 로그 기록
 const logPath = join(logDir, `${parsed.slug}-${level}-${nowIso().replace(/[:.]/g, '-')}.log`);
@@ -224,7 +258,7 @@ const logRel = relative(configRoot, logPath).replace(/\\/g, '/');
 const tree2 = fingerprintTree({ cwd: root, base: 'index', excludes: cfg.fingerprint_exclude });
 if (tree2 !== tree) fail(1, `게이트 실행 중 인덱스가 바뀌었다(${tree.slice(0, 12)} → ${tree2.slice(0, 12)}) — 기록하지 않음. 재실행할 것`);
 
-const overallKeys = level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra', 'dod'] : ['compile', 'lint'];
+const overallKeys = REQUIRED_KEYS[level];
 const overall = overallKeys.every(k => OKSET.has(results[k])) ? 'PASS' : 'FAIL';
 const at = nowIso();
 const duration_s = +((Date.now() - t0) / 1000).toFixed(1);
@@ -239,7 +273,7 @@ for (const d of latest.dod ?? []) {
   if (j && (j.probe ?? null) === (d.probe ?? null) && JSON.stringify(j.tests ?? null) === JSON.stringify(d.tests ?? null)) { d.last = j.last; d.at = j.at; }
 }
 latest.gate = {
-  level, tree, results, stacks: stacksOut, dod: dodSummary,
+  level, tree, results, stacks: stacksOut, dod: dodSummary, ...(level === 'related' ? { related: relatedOut } : {}),
   log: logRel, log_sha256: sha256(Buffer.from(logText, 'utf8')), duration_s, at,
   full_at: level === 'full' ? at : (prev && prev.tree === tree ? prev.full_at ?? null : null),
 };
@@ -249,14 +283,90 @@ try { pinRef(`refs/harness/${parsed.slug}/gate`, tree, root); } catch (e) { cons
 // Herdr 사이드바·알림(Herdr 밖이면 무동작). FAIL 은 사람을 부르고(request), 전량 PASS 는 끝났다고 알린다(done).
 herdrPing(cwd, `gate ${level} ${overall}`, overall === 'FAIL'
   ? { title: `${latest.keys.join(',')} gate ${level} FAIL`, body: Object.entries(results).filter(([, v]) => v === 'FAIL').map(([k]) => k).join(', ') || 'FAIL', sound: 'request' }
-  : level === 'full' ? { title: `${latest.keys.join(',')} gate full PASS`, body: `${duration_s}s · push 가능`, sound: 'done' } : null);
+  : pushLevel ? { title: `${latest.keys.join(',')} gate ${level} PASS`, body: `${duration_s}s · push 가능`, sound: 'done' } : null);
 
-const summary = { level, overall, tree, results, stacks: stacksOut, dod: dodSummary, duration_s, log: logRel, state: relative(configRoot, sPath).replace(/\\/g, '/') };
+const summary = { level, overall, tree, results, stacks: stacksOut, ...(level === 'related' ? { related: relatedOut } : {}), dod: dodSummary, duration_s, log: logRel, state: relative(configRoot, sPath).replace(/\\/g, '/') };
 if (json) console.log(JSON.stringify(summary, null, 2));
 else {
   console.log(`[gate] ${level} ${overall} · ${duration_s}s · tree ${tree.slice(0, 12)} · dod ${dodSummary}`);
   for (const [k, v] of Object.entries(results)) console.log(`  ${k.padEnd(8)} ${v}`);
+  for (const [n, r] of Object.entries(relatedOut)) console.log(`  related  ${n}: ${r.mode} · 클래스/파일 ${r.selected} · 테스트 ${r.tests}건${r.failed ? ` · 실패 ${r.failed}` : ''} — ${r.reason}`);
   console.log(`  log      ${logRel}`);
   if (level === 'commit' && duration_s > cfg.gate.commit_budget_s) console.log(`  ⚠ 경량 게이트 목표 ${cfg.gate.commit_budget_s}s 초과`);
+  if (level === 'related') console.log(`  전체 스위트·build·extra 는 ${cfg.default_branch} 에서 배치로: gate.mjs --main (여러 이슈를 머지한 뒤 1회)`);
 }
 process.exit(overall === 'PASS' ? 0 : 1);
+
+// ---------- --main: 기본 브랜치 배치 전량 ----------
+// 이슈 게이트(--related)가 뒤로 미룬 build·전체 테스트·extra 를 머지된 main 에서 한 번에 돈다. 상태 JSON 이 아니라 main-gate.json 에 남긴다 —
+// 이슈 브랜치는 이미 아카이브됐고, 실패하면 "직전 PASS 이후 들어온 커밋" 이 용의자 목록이다.
+function runMainGate() {
+  const recPath = join(configRoot, cfg.runtime_dir, 'main-gate.json');
+  let rec = { last: null, last_pass: null, history: [] };
+  try { if (existsSync(recPath)) rec = { ...rec, ...JSON.parse(readFileSync(recPath, 'utf8')) }; } catch { /* 깨진 기록은 새로 쓴다 */ }
+  const head = git(['rev-parse', 'HEAD'], { cwd: root }).out;
+  const since = rec.last_pass?.head;
+  const pending = since ? git(['log', '--first-parent', '--format=%h %s', `${since}..HEAD`], { cwd: root, allowFail: true }).out.split('\n').filter(Boolean) : null;
+  if (flag('--status')) {
+    const st = { last: rec.last, last_pass: rec.last_pass, head, pending_commits: pending ? pending.length : null, pending: (pending ?? []).slice(0, 30) };
+    console.log(json ? JSON.stringify(st, null, 2) : `[gate] main 마지막 ${rec.last ? `${rec.last.overall} ${rec.last.head.slice(0, 8)} @${rec.last.at}` : '기록 없음'} · 마지막 PASS ${since ? since.slice(0, 8) : '없음'} · 그 뒤 커밋 ${pending ? pending.length : '?'}개`);
+    process.exit(0);
+  }
+  if (branch !== cfg.default_branch && !flag('--any-branch')) fail(2, `--main 은 ${cfg.default_branch} 에서 돈다(지금 ${branch ?? '(detached)'}) — 머지·push 뒤 ${cfg.default_branch} 를 checkout 하고 실행할 것`);
+  const dirty = [...stagedFiles(root), ...changedVsHead(root), ...untrackedFiles(root)].filter(p => !matchesAny(p, cfg.fingerprint_exclude));
+  if (dirty.length) fail(2, `작업트리가 깨끗하지 않다(${dirty.slice(0, 5).join(', ')}) — 커밋된 ${cfg.default_branch} 만 잰다`);
+  const names = opt('--stacks') ? opt('--stacks').split(',').map(s => s.trim()).filter(Boolean) : Object.keys(cfg.stacks);
+  for (const n of names) if (!cfg.stacks[n]) fail(2, `알 수 없는 스택 "${n}"`);
+  const msteps = ['compile', 'lint', 'build', 'test', 'extra'];
+  if (flag('--dry-run')) {
+    console.log(JSON.stringify({ level: 'main', branch, head, since: since ?? null, pending_commits: pending ? pending.length : null, stacks: Object.fromEntries(names.map(n => [n, Object.fromEntries(msteps.map(s => [s, s === 'extra' ? cfg.stacks[n].extra : cfg.stacks[n][s] ?? null]))])) }, null, 2));
+    process.exit(0);
+  }
+  const shell = resolveShell(cfg);
+  const t0 = Date.now();
+  const logDir = join(configRoot, cfg.runtime_dir, 'gate');
+  mkdirSync(logDir, { recursive: true });
+  const chunks = [`# jira-harness gate main · ${branch} · ${nowIso()} · head ${head}\n`];
+  const results = Object.fromEntries(msteps.map(s => [s, 'NOT_RUN']));
+  const per = Object.fromEntries(msteps.map(s => [s, []]));
+  const stacks = {};
+  for (const name of names) {
+    const s = cfg.stacks[name];
+    const env = { ...process.env, ...loadEnvFile(configRoot, s.env_file), JIRA_HARNESS_GATE: 'main' };
+    stacks[name] = {};
+    for (const step of msteps) {
+      const cmds = step === 'extra' ? (s.extra ?? []) : (s[step] ? [s[step]] : []);
+      if (!cmds.length) { stacks[name][step] = 'SKIPPED'; per[step].push('SKIPPED'); continue; }
+      let v = 'PASS';
+      for (const cmd of cmds) {
+        console.error(`[gate] main ${name}.${step}: ${cmd}`);
+        const r = runCmd(shell, cmd, { cwd: resolve(root, s.dir), env, timeoutS: cfg.gate.timeout_s });
+        chunks.push(`\n## ${name}.${step} $ ${cmd}\n## exit=${r.status} ${r.seconds}s${r.timedOut ? ' TIMEOUT' : ''}\n${r.out.length > 200_000 ? r.out.slice(0, 200_000) + '\n…(truncated)' : r.out}\n`);
+        if (r.status !== 0) { v = 'FAIL'; console.error(`[gate] main ${name}.${step} FAIL (exit ${r.status}${r.timedOut ? ', timeout' : ''})`); break; }
+      }
+      stacks[name][step] = v; per[step].push(v);
+    }
+  }
+  for (const step of msteps) results[step] = per[step].includes('FAIL') ? 'FAIL' : per[step].includes('PASS') ? 'PASS' : 'SKIPPED';
+  const overall = msteps.every(k => results[k] === 'PASS' || results[k] === 'SKIPPED') ? 'PASS' : 'FAIL';
+  const at = nowIso();
+  const duration_s = +((Date.now() - t0) / 1000).toFixed(1);
+  const logPath = join(logDir, `main-${at.replace(/[:.]/g, '-')}.log`);
+  writeFileSync(logPath, chunks.join(''), 'utf8');
+  const log = relative(configRoot, logPath).replace(/\\/g, '/');
+  const entry = { head, at, overall, results, stacks, duration_s, log, since: since ?? null, commits: pending ?? null };
+  rec.last = entry;
+  if (overall === 'PASS') rec.last_pass = { head, at };
+  rec.history = [...(rec.history ?? []), { head, at, overall, duration_s, commits: pending ? pending.length : null }].slice(-30);
+  writeFileSync(recPath, JSON.stringify(rec, null, 2) + '\n', 'utf8');
+  herdrPing(cwd, `gate main ${overall}`, { title: `${cfg.default_branch} gate main ${overall}`, body: overall === 'FAIL' ? Object.entries(results).filter(([, v]) => v === 'FAIL').map(([k]) => k).join(', ') : `${duration_s}s · 커밋 ${pending ? pending.length : '?'}개 검증`, sound: overall === 'FAIL' ? 'request' : 'done' });
+  const out = { level: 'main', overall, head, results, stacks, duration_s, log, since: since ?? null, pending_commits: pending ? pending.length : null, suspects: overall === 'FAIL' ? (pending ?? []).slice(0, 30) : undefined };
+  if (json) console.log(JSON.stringify(out, null, 2));
+  else {
+    console.log(`[gate] main ${overall} · ${duration_s}s · head ${head.slice(0, 8)} · 직전 PASS 이후 커밋 ${pending ? pending.length : '?'}개`);
+    for (const [k, v] of Object.entries(results)) console.log(`  ${k.padEnd(8)} ${v}`);
+    console.log(`  log      ${log}`);
+    if (overall === 'FAIL' && pending?.length) console.log(`  용의 커밋(직전 PASS 이후, first-parent):\n    ${pending.slice(0, 30).join('\n    ')}`);
+  }
+  process.exit(overall === 'PASS' ? 0 : 1);
+}

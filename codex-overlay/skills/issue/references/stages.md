@@ -76,10 +76,14 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 ## gate
 
 - 커밋 전 `gate.mjs --commit [--stage-all]` — 컴파일·린트, **건드린 스택만**. DoD 는 돌리지 않는다(커밋마다 DoD 를 다시 돌린 것이 경량 게이트 시간의 86%였다). 목표 `gate.commit_budget_s`(기본 3분). 구현 중 새 테스트가 도는지는 관련 테스트만 직접 돌려 본다.
-- push·complete 전 `gate.mjs --full` — **DoD 프로브를 먼저** 돌리고, 하나라도 FAIL 이면 스택 단계를 건너뛰고 끝난다(프로브를 고친 뒤 다시). 통과하면 빌드·전체 테스트·extra(프로젝트 정적 게이트 등) → DoD tests 항목. 9~15분이면 `exec_command`로 시작하고 반환된 session_id를 `write_stdin`으로 기다린다.
-- `--full --stacks a,b` 로 스택을 줄일 수 있지만 **이 브랜치가 바꾼 스택은 뺄 수 없다**(exit 2) — 기록은 결과만 남고 어느 스택이 돌았는지는 push·complete 가 다시 보지 않기 때문이다. 다른 스택의 파일을 읽는 테스트가 있으면 그 경로를 그 스택의 `stacks.<name>.paths` 에 넣어 둔다.
-- **Herdr 안이면** 게이트를 runner pane 에서 돌린다 — `node "<P>/scripts/herdr-lanes.mjs" gate --full|--commit [--stage-all] [--no-wait] --cwd <루트> --json`. 로그가 driver 컨텍스트 밖(pane)에 남고, 기록·토스트는 gate.mjs 가 그대로 한다. `--no-wait` 면 바로 돌아오고 완료 토스트(전량 PASS=done · FAIL=request)를 기다린다. 결과 JSON 은 출력의 `out`.
-- 같은 트리에 전량 통과 기록이 이미 있으면 `--commit` 은 재실행을 생략한다.
+- push·complete 전 게이트는 `harness.json.gate.push_level` 이 정한다(훅·`issue-complete` 의 거부 사유에 필요한 명령이 그대로 적힌다).
+  - **`related`** → `gate.mjs --related`: **DoD 프로브 먼저** → 이 브랜치가 바꾼 스택(기본 브랜치와의 merge-base 이후 + 작업트리)의 컴파일·린트 → **관련 테스트** → DoD tests 항목. 관련 테스트는 `stacks.<name>.dod_tests.adapter` 로 고른다 — gradle 은 바뀐 클래스 이름을 단어 단위로 쓰는 테스트 클래스 + 바뀐 테스트 자신(`--tests <FQCN>`), vitest 는 `vitest related --run <바뀐 파일>`(import 그래프). 빌드 설정·의존성·공용 리소스(`related.fallback_full`)가 바뀌었거나 선택이 상한을 넘으면 **그 스택만** 전체 테스트로 돈다. 고를 것이 없으면 테스트 단계는 SKIPPED 이고 요약 `related.<스택>: none · 테스트 0건` 이 보인다 — 보고에 그대로 적는다("위반 0" 이 아니라 "검사 0"). build·extra·전체 스위트는 이슈에서 돌지 않고 아래 **main 배치**로 간다.
+  - **`full`**(기본) → `gate.mjs --full`: DoD 프로브 먼저 → 빌드·전체 테스트·extra → DoD tests 항목.
+  - 둘 다 DoD 프로브가 하나라도 FAIL 이면 스택 단계를 건너뛰고 끝난다(프로브를 고친 뒤 다시). 오래 걸리면 `exec_command`로 시작하고 반환된 session_id를 `write_stdin`으로 기다린다.
+  - 이슈 게이트가 실패했을 때 **실패 테스트가 이 브랜치와 무관해 보이면**(공유 자원·부하·시간 초과) 그 테스트만 단독 재실행해 판정 근거를 남긴다. 전체 게이트를 같은 조건에서 몇 번이고 다시 돌리지 않는다 — 2회 연속 환경 요인이면 멈추고 보고한다.
+- `--related`·`--full` 의 `--stacks a,b` 로 스택을 줄일 수 있지만 **이 브랜치가 바꾼 스택은 뺄 수 없다**(exit 2) — 기록은 결과만 남고 어느 스택이 돌았는지는 push·complete 가 다시 보지 않기 때문이다. 다른 스택의 파일을 읽는 테스트가 있으면 그 경로를 그 스택의 `stacks.<name>.paths` 에 넣어 둔다.
+- **Herdr 안이면** 게이트를 runner pane 에서 돌린다 — `node "<P>/scripts/herdr-lanes.mjs" gate --related|--full|--main|--commit [--stacks a,b] [--stage-all] [--no-wait] --cwd <루트> --json`. 로그가 driver 컨텍스트 밖(pane)에 남고, 기록·토스트는 gate.mjs 가 그대로 한다. `--no-wait` 면 바로 돌아오고 완료 토스트(전량 PASS=done · FAIL=request)를 기다린다. 결과 JSON 은 출력의 `out`.
+- 같은 트리에 전량·관련 테스트 통과 기록(compile·lint PASS)이 이미 있으면 `--commit` 은 재실행을 생략한다.
 - DoD `tests: {stack, select[]}` 항목은 스택별로 **한 번에** 돈다(`stacks.<stack>.dod_tests` — gradle `--tests` 합집합 · vitest 경로 합집합 + JSON 리포터) — 러너 리포트로 항목마다 판정한다(걸린 것 1건 이상 · 실패 0 · 통과 ≥ `min_tests`). test 명령이 `dod_tests.run` 과 같으면 그 리포트를 읽기만 하고 다시 돌리지 않는다. `probe` 문자열 항목은 항목마다 돈다 — 테스트를 도는 DoD 를 probe 로 쓰면 항목 수만큼 러너를 새로 띄운다(2026-09-23 실측: 41건 31.5분).
 - DoD `human:true` 는 게이트가 SKIPPED 로 남긴다 — 보고에 "사람 확인 필요 N건" 을 적는다. `expect.min_tests` 는 실행 건수 0 을 FAIL 로 본다(초록이 "검사 0" 인지 "위반 0" 인지 구분하기 위해). 건수는 러너 요약 줄(`Tests N passed`·`N tests completed`·`Tests run: N`)이나 숫자 한 줄에서 읽고 색상 코드는 벗긴다. 건수를 출력하지 않는 sentinel 프로브(위반 주입·존재 검사·lint 문구)에는 `min_tests` 를 두지 않는다 — 두면 "분모 미확인" 으로 상시 FAIL 이다.
 - FAIL 이면 `<runtime>/gate/<slug>-<level>-<시각>.log` 를 읽고 코드를 고친 뒤 재실행. 게이트 명령을 바꾸거나 테스트를 지워서 통과시키지 않는다.
@@ -93,10 +97,19 @@ Codex 질문 도구: `request_user_input`은 제공되는 모드에서만 사용
 
 ## complete
 
-1. `gate.mjs --full` 이 현재 트리에 대해 신선한지 먼저 본다(낡았으면 여기서 돌린다).
-2. `issue-complete.mjs [--dry-run] [--no-push] --json` — 전량 게이트·리뷰 신선도·작업트리 clean 을 다시 검사 → `git push -u origin <branch>` → 상태 JSON 을 `<runtime>/issues/archive/` 로 이동(stage `archived`) → `{jira:{transition, comment}, summary}` 출력. CLAUDE.md 줄 수가 `wiki.claude_md_max_lines`(기본 150) 를 넘으면 거부한다 — closure 는 CHANGELOG·wiki 로 간다. `summary.timing`(start 기준 단계별 첫 도달 초 · 커밋 게이트 횟수 · 전량 게이트 시간)과 댓글의 `- 소요:` 줄이 **이슈마다 자동으로** 남는다 — 하네스가 실제로 시간을 줄이는지는 이 값을 이슈별로 모아 v2 기준선과 비교한다(`measure.py` 는 세션 단위라 이슈 단위 시간은 여기서만 나온다). 아카이브 뒤 같은 브랜치의 closure 문서 커밋(3번 wiki-row 결과·CHANGELOG)은 docs-only 로 통과한다 — `git add … && git commit` 한 명령이어도 스테이징 예정 파일로 판정한다. 코드 커밋은 `COMPLETED` 로 막힌다(다시 시작은 `issue-start.mjs <KEY> --adopt`).
+1. push 전 게이트(`push_level` 에 따라 `--related` 또는 `--full`)가 현재 트리에 대해 신선한지 먼저 본다(낡았으면 여기서 돌린다).
+2. `issue-complete.mjs [--dry-run] [--no-push] --json` — push 전 게이트·리뷰 신선도·작업트리 clean 을 다시 검사 → `git push -u origin <branch>` → 상태 JSON 을 `<runtime>/issues/archive/` 로 이동(stage `archived`) → `{jira:{transition, comment}, summary}` 출력. CLAUDE.md 줄 수가 `wiki.claude_md_max_lines`(기본 150) 를 넘으면 거부한다 — closure 는 CHANGELOG·wiki 로 간다. `summary.timing`(start 기준 단계별 첫 도달 초 · 커밋 게이트 횟수 · 전량 게이트 시간)과 댓글의 `- 소요:` 줄이 **이슈마다 자동으로** 남는다 — 하네스가 실제로 시간을 줄이는지는 이 값을 이슈별로 모아 v2 기준선과 비교한다(`measure.py` 는 세션 단위라 이슈 단위 시간은 여기서만 나온다). 아카이브 뒤 같은 브랜치의 closure 문서 커밋(3번 wiki-row 결과·CHANGELOG)은 docs-only 로 통과한다 — `git add … && git commit` 한 명령이어도 스테이징 예정 파일로 판정한다. 코드 커밋은 `COMPLETED` 로 막힌다(다시 시작은 `issue-start.mjs <KEY> --adopt`).
    거부 코드는 훅과 같은 사다리(SKILL.md §3) 에 세 개가 더 있다: `CLAUDE_MD_TOO_LONG`(줄여서 재실행) · `BAD_STATE`(상태 JSON 이 스키마에 안 맞음 — `issue-set.mjs` 로 고치거나 `issue-start.mjs` 로 다시 만든다) · `PUSH_FAILED`(원격 거부 — 사유를 그대로 보고, 상태는 archive 로 옮기지 않는다).
 3. `wiki-row.mjs --index <wiki.index> --key <KEY> --set "<상태열>=closed" … --log <wiki.log> --event "<한 줄>" --phase closure` → `wiki-lint.mjs --docs <docs> [--memory <memory dir>] --root <프로젝트 루트>` 가 high 위반 0.
 4. 배운 것이 있으면 `jira-harness 플러그인의 kb-ingest 스킬` 로 wiki 종합 페이지 최대 `wiki.max_pages_per_closure` 장. 자동 메모리에 남길 것은 `memory-index.mjs --dir <memory dir> --add "<인덱스 한 줄>"`(본문 파일은 직접 쓴다).
 5. Atlassian MCP: `transitionJiraIssue`(`jira.done_transition`) + `addCommentToJiraIssue`(출력 comment). 키마다 — 하위부터. **부모**(상태 JSON `subtasks[].parent`)는 전이 직전에 `getJiraIssue` 로 그 하위를 다시 읽어, 이 브랜치에 안 들어온 하위(다른 레포 몫·`subtasks.match` 밖)가 아직 안 끝났으면(완료 카테고리 · `jira.done_transition` 상태가 아니면) 부모를 전이하지 않고 "부모 <KEY> 보류 — 남은 하위: <KEY…>" 를 보고한다.
-6. 보고: 브랜치·push 여부·게이트 분모·리뷰 결과·사람이 할 일(main 머지는 사람 — 자동 머지 금지).
+6. 보고: 브랜치·push 여부·게이트 분모(관련 테스트면 스택별 mode·건수)·리뷰 결과·사람이 할 일(main 머지는 사람 — 자동 머지 금지). `push_level=related` 면 "전체 스위트는 main 배치 대기" 를 한 줄 남긴다.
+
+## main 배치 — `push_level=related` 의 전체 스위트
+
+이슈 게이트가 미룬 build·전체 테스트·extra 를 **기본 브랜치에서 한 번에** 돈다. 여러 이슈를 머지한 뒤(같은 세션의 마지막, 또는 배포·릴리즈 직전) 1회면 된다 — 이슈마다 돌리면 이 모드를 쓰는 이유가 사라진다.
+
+1. 기본 브랜치를 checkout 한 깨끗한 작업트리(메인 체크아웃)에서 `node "<P>/scripts/gate.mjs" --main [--json]` — 이슈 상태 JSON 이 없어도 돈다. 기록은 `<runtime>/main-gate.json`(마지막 결과 · 마지막 PASS 의 head · 최근 30회).
+2. 지금 얼마나 쌓였나: `gate.mjs --main --status` — 마지막 PASS 이후 first-parent 커밋 수·목록.
+3. PASS → 배포·릴리즈로 진행. FAIL → 출력의 `suspects`(마지막 PASS 이후 커밋)에서 실패 테스트를 바꾼 이슈를 찾고, 그 테스트를 단독 재실행해 실제 결함인지(그 이슈 브랜치를 `--adopt` 로 다시 열어 고친다) 환경 요인인지 가른다. 환경 요인이면 단독 PASS 근거와 함께 보고하고 재실행은 한가할 때 1회.
+4. Herdr 안이면 `herdr-lanes.mjs gate --main --no-wait` 로 runner pane 에서 돌린다.

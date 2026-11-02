@@ -20,13 +20,13 @@ import { spawnSync } from 'node:child_process';
 import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState } from './config.mjs';
 import { currentBranch } from './git.mjs';
 import { fingerprintTree } from './tree.mjs';
-import { treeAccepted } from './gate-core.mjs';
+import { treeAccepted, REQUIRED_KEYS } from './gate-core.mjs';
 
 const OKSET = new Set(['PASS', 'SKIPPED']);
 /** gate 기록의 결과 한 단어 — gate.mjs 와 같은 축(레벨에 속한 키만 본다. NOT_RUN 은 그 레벨의 키가 아니다) */
 export function gateOverall(gate) {
   if (!gate) return null;
-  const keys = gate.level === 'full' ? ['compile', 'lint', 'build', 'test', 'extra', 'dod'] : ['compile', 'lint'];
+  const keys = REQUIRED_KEYS[gate.level] ?? REQUIRED_KEYS.commit;
   return keys.every(k => OKSET.has(gate.results?.[k])) ? 'PASS' : 'FAIL';
 }
 

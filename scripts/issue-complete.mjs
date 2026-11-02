@@ -12,7 +12,7 @@ import { join, relative, resolve } from 'node:path';
 import { locateProject, loadConfig, parseBranch, branchSlug, statePath, readState, writeState, matchesAny } from './lib/config.mjs';
 import { currentBranch, git, stagedFiles, unstagedFiles, untrackedFiles } from './lib/git.mjs';
 import { fingerprintTree } from './lib/tree.mjs';
-import { treeAccepted, sha256File } from './lib/gate-core.mjs';
+import { treeAccepted, sha256File, REQUIRED_KEYS, pushLevels, pushGateCommand } from './lib/gate-core.mjs';
 import { herdrPing } from './lib/herdr.mjs';
 
 // ---------- 인자 ----------
@@ -25,7 +25,6 @@ const noPush = flag('--no-push');
 const cwd = resolve(opt('--cwd') ?? process.cwd());
 
 const OK_RESULT = new Set(['PASS', 'SKIPPED']);
-const GATE_KEYS = ['compile', 'lint', 'build', 'test', 'extra', 'dod'];
 
 function nowIso() { return new Date().toISOString(); }
 function fwd(p) { return p.replace(/\\/g, '/'); }
@@ -86,22 +85,24 @@ if (staged.length || unstaged.length || untracked.length) {
 // ---------- 게이트 기록 ----------
 const tree = fingerprintTree({ cwd: root, base: 'HEAD', excludes: ex });
 const g = state.gate;
-if (!g) reject('NO_GATE', '게이트 기록 없음 — gate.mjs --full 을 먼저 실행할 것', base);
-if (g.level !== 'full') reject('GATE_LEVEL', `마감은 전량 게이트가 필요하다(기록은 ${g.level}) — gate.mjs --full`, base);
+const needGate = pushGateCommand(cfg);
+if (!g) reject('NO_GATE', `게이트 기록 없음 — ${needGate} 을 먼저 실행할 것`, base);
+if (!pushLevels(cfg).includes(g.level)) reject('GATE_LEVEL', `마감은 ${pushLevels(cfg).join('·')} 게이트가 필요하다(기록은 ${g.level}) — ${needGate}`, base);
+const GATE_KEYS = REQUIRED_KEYS[g.level] ?? REQUIRED_KEYS.full;
 const gt = treeAccepted(g.tree, tree, cfg, root);
 if (!gt.ok) {
-  reject('GATE_STALE', `게이트 기록 이후 코드가 바뀌었다(${gt.changed ? gt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — gate.mjs --full 재실행`, base);
+  reject('GATE_STALE', `게이트 기록 이후 코드가 바뀌었다(${gt.changed ? gt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — ${needGate} 재실행`, base);
 }
 const results = g.results ?? {};
 const badGate = GATE_KEYS.filter(k => !OK_RESULT.has(results[k] ?? 'NOT_RUN'));
 if (badGate.length) {
-  reject('GATE_FAIL', `게이트 결과 미통과: ${badGate.map(k => `${k}=${results[k] ?? 'NOT_RUN'}`).join(' · ')} — gate.mjs --full`, base);
+  reject('GATE_FAIL', `게이트 결과 미통과: ${badGate.map(k => `${k}=${results[k] ?? 'NOT_RUN'}`).join(' · ')} — ${needGate}`, base);
 }
 if (g.log) {
   const logFile = join(configRoot, g.log);
-  if (!existsSync(logFile)) reject('GATE_LOG_MISSING', `게이트 로그가 없다(${g.log}) — gate.mjs --full 재실행`, base);
+  if (!existsSync(logFile)) reject('GATE_LOG_MISSING', `게이트 로그가 없다(${g.log}) — ${needGate} 재실행`, base);
   if (g.log_sha256 && sha256File(logFile) !== g.log_sha256) {
-    reject('GATE_LOG_MISMATCH', `게이트 로그 해시가 기록과 다르다(${g.log}) — gate.mjs --full 재실행`, base);
+    reject('GATE_LOG_MISMATCH', `게이트 로그 해시가 기록과 다르다(${g.log}) — ${needGate} 재실행`, base);
   }
 }
 
@@ -139,7 +140,7 @@ const resultLine = GATE_KEYS.map(k => `${k} ${results[k] ?? 'NOT_RUN'}`).join(' 
 const gateSummary = {
   level: g.level, tree: g.tree, at: g.at, results, stacks: g.stacks ?? null,
   dod: g.dod ?? null, dod_probe_pass: probePass, dod_probe_total: probes.length, dod_human: humans.length,
-  log: g.log ?? null, duration_s: g.duration_s ?? null,
+  log: g.log ?? null, duration_s: g.duration_s ?? null, related: g.related ?? null,
 };
 const reviewSummary = {
   tree: rv.tree, at: rv.at, round: rv.round ?? null, delta_passes: rv.delta_passes ?? 0,
@@ -158,16 +159,18 @@ const timing = {
   total_s: startAt ? Math.max(0, Math.round((Date.now() - Date.parse(startAt)) / 1000)) : null,
   stage_offsets_s: Object.fromEntries(Object.entries(firstAt).filter(([k]) => k !== "start").map(([k, v]) => [k, secs(startAt, v)])),
   gate_commit_runs: hist.filter(h => h.stage === "gate" && /commit/.test(h.note ?? "")).length,
-  gate_full_duration_s: g.duration_s ?? null,
+  gate_full_duration_s: g.duration_s ?? null, gate_level: g.level,
 };
 const timingLine = startAt
-  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · 전량 게이트 ${fmtDur(timing.gate_full_duration_s)})`
+  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · ${g.level === 'related' ? '관련 테스트' : '전량'} 게이트 ${fmtDur(timing.gate_full_duration_s)})`
   : null;
 
 const comment = [
   `${keys.length ? keys.join(', ') + ' ' : ''}구현을 마치고 브랜치 \`${branch}\` 를 원격에 올렸습니다.`,
   '',
-  `- 게이트: 전량(full) · ${resultLine}`,
+  g.level === 'related'
+    ? `- 게이트: 관련 테스트(related) · ${resultLine} · ${Object.entries(g.related ?? {}).map(([n, r]) => `${n} ${r.mode} 테스트 ${r.tests}건`).join(' / ') || '관련 스택 없음'} — 전체 스위트·build·extra 는 ${cfg.default_branch} 배치(gate.mjs --main)`
+    : `- 게이트: 전량(full) · ${resultLine}`,
   stackLine ? `  - 스택별: ${stackLine}` : null,
   `- DoD: 프로브 ${probePass}/${probes.length} PASS · 사람 확인 ${humans.length}건 SKIPPED${humanPending.length ? ` (미확인 ${humanPending.join(', ')})` : ''}`,
   `- 리뷰: 라운드 ${reviewSummary.round ?? '?'} · 델타 패스 ${reviewSummary.delta_passes} · codex ${reviewSummary.codex} · 확정 blocker ${reviewSummary.blockers_open}건`,
