@@ -136,6 +136,7 @@ const stackLine = Object.entries(g.stacks ?? {})
   .map(([name, steps]) => `${name}(${Object.entries(steps).map(([k, v]) => `${k} ${v}`).join(' · ')})`)
   .join(' / ');
 const resultLine = GATE_KEYS.map(k => `${k} ${results[k] ?? 'NOT_RUN'}`).join(' · ');
+const dodTestItems = dod.filter(d => d.tests && !d.human).length; // dod 게이트의 유일한 테스트 — 0 이면 댓글에 「검사 0」을 드러낸다
 
 const gateSummary = {
   level: g.level, tree: g.tree, at: g.at, results, stacks: g.stacks ?? null,
@@ -162,7 +163,7 @@ const timing = {
   gate_full_duration_s: g.duration_s ?? null, gate_level: g.level,
 };
 const timingLine = startAt
-  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · ${g.level === 'related' ? '관련 테스트' : '전량'} 게이트 ${fmtDur(timing.gate_full_duration_s)})`
+  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · ${g.level === 'related' ? '관련 테스트' : g.level === 'dod' ? '경량+DoD' : '전량'} 게이트 ${fmtDur(timing.gate_full_duration_s)})`
   : null;
 
 const comment = [
@@ -170,7 +171,9 @@ const comment = [
   '',
   g.level === 'related'
     ? `- 게이트: 관련 테스트(related) · ${resultLine} · ${Object.entries(g.related ?? {}).map(([n, r]) => `${n} ${r.mode} 테스트 ${r.tests}건`).join(' / ') || '관련 스택 없음'} — 전체 스위트·build·extra 는 ${cfg.default_branch} 배치(gate.mjs --main)`
-    : `- 게이트: 전량(full) · ${resultLine}`,
+    : g.level === 'dod'
+      ? `- 게이트: 경량+DoD(dod) · ${resultLine} · DoD tests 항목 ${dodTestItems}건${dodTestItems ? '' : '(테스트 검사 0)'} — 테스트(관련·전체)·build·extra 는 ${cfg.default_branch} 배치(gate.mjs --main)에서 검증 예정`
+      : `- 게이트: 전량(full) · ${resultLine}`,
   stackLine ? `  - 스택별: ${stackLine}` : null,
   `- DoD: 프로브 ${probePass}/${probes.length} PASS · 사람 확인 ${humans.length}건 SKIPPED${humanPending.length ? ` (미확인 ${humanPending.join(', ')})` : ''}`,
   `- 리뷰: 라운드 ${reviewSummary.round ?? '?'} · 델타 패스 ${reviewSummary.delta_passes} · codex ${reviewSummary.codex} · 확정 blocker ${reviewSummary.blockers_open}건`,

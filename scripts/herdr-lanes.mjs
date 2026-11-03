@@ -39,7 +39,7 @@
 //       → harness.json.herdr.kinds.verify 레인들을 돌려 findings 를 verify.js 모양으로 합친다
 //   node herdr-lanes.mjs implement [--slug s] [--lanes a,b] [--contracts-file <md>] [--fresh] [--no-apply] [--dry-run] [--cwd] [--json]
 //       → 상태 JSON lanes[] 를 worktree 레인으로 돌리고 패치를 회수·적용한다. 레인 기록은 issue-set.mjs --lane 으로 상태 JSON 에 남긴다
-//   node herdr-lanes.mjs gate --full|--related|--main|--commit [--stage-all] [--no-wait] [--cwd] [--json]
+//   node herdr-lanes.mjs gate --full|--related|--dod|--main|--commit [--stage-all] [--no-wait] [--cwd] [--json]
 //       → runner pane 에서 gate.mjs 를 돌린다. 기록·토스트는 gate.mjs 가 한다
 //   node herdr-lanes.mjs run --spec <spec.json> [--cwd] [--json]
 //       spec = { lanes: [{ name, kind, prompt | prompt_file, out, cwd?, worktree_branch?, placement?: split|workspace, worktree_dir?, args?[], reuse?, fresh? }], timeout_s?, settle_grace_s?, close_panes?, parallel?, auto_trust? }
@@ -723,7 +723,7 @@ async function main() {
 
   // gate-run: runner pane 안에서 실제로 도는 명령(셸 무관 — 한 프로세스가 gate.mjs 실행·결과 파일·완료 표식까지)
   if (cmd === 'gate-run') {
-    const level = flag('--main') ? '--main' : flag('--full') ? '--full' : flag('--related') ? '--related' : '--commit';
+    const level = flag('--main') ? '--main' : flag('--full') ? '--full' : flag('--related') ? '--related' : flag('--dod') ? '--dod' : '--commit';
     const out = opt('--out'); const nonce = opt('--nonce') ?? 'x';
     if (!out) fail(2, '--out 이 필요하다');
     const args = [join(PLUGIN_ROOT, 'scripts', 'gate.mjs'), level, '--cwd', root, '--json', ...(flag('--stage-all') ? ['--stage-all'] : []), ...(opt('--stacks') ? ['--stacks', opt('--stacks')] : [])];
@@ -736,7 +736,7 @@ async function main() {
   }
 
   if (cmd === 'gate') {
-    const level = flag('--main') ? 'main' : flag('--full') ? 'full' : flag('--related') ? 'related' : 'commit';
+    const level = flag('--main') ? 'main' : flag('--full') ? 'full' : flag('--related') ? 'related' : flag('--dod') ? 'dod' : 'commit';
     const h = herdrEnv(env);
     if (!h.inside || hc.enabled === false) { const o = { ok: false, reason: !h.inside ? 'outside herdr' : 'herdr.enabled=false' }; if (asJson) console.log(JSON.stringify(o)); else console.log(`[herdr-lanes] gate: ${o.reason} — gate.mjs 를 직접 돌릴 것`); return; }
     const rp = runnerPane(cfg, root, env);

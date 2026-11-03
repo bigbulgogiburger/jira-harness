@@ -1,4 +1,4 @@
-// 관련 테스트 게이트(--related) · push_level · 기본 브랜치 배치(--main)
+// 관련 테스트 게이트(--related) · 경량+DoD 게이트(--dod) · push_level · 기본 브랜치 배치(--main)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { newState, writeState, readState } from '../lib/config.mjs';
 import { selectRelated, relatedCommand } from '../lib/related-tests.mjs';
+import { pushLevels, pushGateCommand, REQUIRED_KEYS } from '../lib/gate-core.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = join(HERE, '..');
@@ -166,4 +167,98 @@ test('--main — 기본 브랜치에서만 · 전 스택 전 단계 · main-gate
   put(dir, 'frontend/dirty.js', 'x\n');
   assert.equal(gate(dir, '--main').status, 2, '작업트리가 더러우면 거부');
   assert.ok(existsSync(join(dir, '.claude/runtime/main-gate.json')));
+});
+
+// ---------- push_level=dod: 이슈 게이트는 compile·lint·DoD 만 · 전체 검증은 --main ----------
+test('pushLevels·pushGateCommand — dod 는 dod·related·full 을 받는다 · related·full(기본) 는 종전 그대로', () => {
+  const c = l => (l ? { gate: { push_level: l } } : {});
+  assert.deepEqual(pushLevels(c('dod')), ['dod', 'related', 'full']);
+  assert.deepEqual(pushLevels(c('related')), ['related', 'full']);
+  assert.deepEqual(pushLevels(c('full')), ['full']);
+  assert.deepEqual(pushLevels(c(null)), ['full']);
+  assert.equal(pushGateCommand(c('dod')), 'gate.mjs --dod');
+  assert.equal(pushGateCommand(c('related')), 'gate.mjs --related');
+  assert.equal(pushGateCommand(c(null)), 'gate.mjs --full');
+  assert.deepEqual(REQUIRED_KEYS.dod, ['compile', 'lint', 'dod']);
+});
+
+test('push_level=dod — 경량 기록뿐이면 GATE_LEVEL(--dod 안내) · --dod 기록이면 push 통과 · 바뀐 스택만 compile·lint · 테스트 단계 없음 · DoD tests 0개 경고', () => {
+  const dir = branchWithChange('dod');
+  assert.equal(gate(dir, '--commit').status, 0);
+  review(dir);
+  const lvl = hook(dir, 'git push -u origin feat/ABC-1');
+  assert.equal(lvl.decision, 'deny'); assert.ok(lvl.reason.includes('GATE_LEVEL') && lvl.reason.includes('gate.mjs --dod'), lvl.reason);
+  const r = gate(dir, '--dod', '--json');
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const j = JSON.parse(r.stdout);
+  assert.equal(j.level, 'dod'); assert.equal(j.overall, 'PASS');
+  assert.ok(j.warnings?.some(w => w.includes('DoD tests 항목 0개')), JSON.stringify(j.warnings));
+  const st = readState(stateFile(dir));
+  assert.equal(st.gate.level, 'dod');
+  assert.deepEqual(Object.keys(st.gate.stacks), ['be'], '이 브랜치는 backend 만 바꿨다');
+  assert.deepEqual(Object.keys(st.gate.stacks.be), ['compile', 'lint']);
+  assert.equal(st.gate.results.test, 'NOT_RUN'); assert.equal(st.gate.results.build, 'NOT_RUN');
+  assert.equal(st.gate.results.dod, 'SKIPPED');
+  review(dir);
+  const p = hook(dir, 'git push -u origin feat/ABC-1');
+  assert.equal(p.decision, 'pass', p.reason);
+  const text = gate(dir, '--dod');
+  assert.match(text.stdout, /gate\.mjs --main 1회 필수/); assert.match(text.stdout, /⚠ DoD tests 항목 0개/);
+});
+
+test('push_level=dod — related·full 기록도 push 를 통과한다(더 강한 단계)', () => {
+  for (const lvl of ['--related', '--full']) {
+    const dir = branchWithChange('dod');
+    const r = gate(dir, lvl);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    review(dir);
+    const p = hook(dir, 'git push');
+    assert.equal(p.decision, 'pass', `${lvl}: ${p.reason}`);
+  }
+});
+
+test('push_level=related·full — dod 기록으로는 push 가 GATE_LEVEL 로 막힌다(종전 동작 불변)', () => {
+  for (const [pl, need] of [['related', 'gate.mjs --related'], [null, 'gate.mjs --full']]) {
+    const dir = branchWithChange(pl);
+    assert.equal(gate(dir, '--dod').status, 0);
+    review(dir);
+    const p = hook(dir, 'git push');
+    assert.equal(p.decision, 'deny'); assert.ok(p.reason.includes('GATE_LEVEL') && p.reason.includes(need), p.reason);
+  }
+});
+
+test('push_level=dod — DoD 항목이 돌고 FAIL 이면 GATE_FAIL · tests 항목이 있으면 경고 없음 · --stacks 로 바뀐 스택을 뺄 수 없다', () => {
+  const dir = branchWithChange('dod');
+  const st0 = readState(stateFile(dir));
+  st0.dod = [{ id: 'D1', text: 'be 테스트', probe: 'echo ok', tests: { stack: 'be', select: ['a.FooTest'] }, last: 'PENDING' }];
+  writeState(stateFile(dir), st0);
+  const r = gate(dir, '--dod', '--json');
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const j = JSON.parse(r.stdout);
+  assert.equal(j.results.dod, 'PASS'); assert.equal(j.warnings, undefined);
+  const st1 = readState(stateFile(dir));
+  st1.dod[0].probe = 'exit 4';
+  writeState(stateFile(dir), st1);
+  assert.equal(gate(dir, '--dod').status, 1);
+  review(dir);
+  const bad = hook(dir, 'git push');
+  assert.equal(bad.decision, 'deny'); assert.ok(bad.reason.includes('GATE_FAIL'), bad.reason);
+  const s = gate(dir, '--dod', '--stacks', 'fe');
+  assert.equal(s.status, 2); assert.match(s.stderr, /바뀐 스택을 뺐다: be/);
+});
+
+test('push_level=dod — issue-complete 는 dod 기록을 받고 Jira 댓글에 --main 배치를 적는다 · 경량 기록뿐이면 GATE_LEVEL', () => {
+  const dir = branchWithChange('dod');
+  const complete = () => sh(NODE, [join(SCRIPTS, 'issue-complete.mjs'), '--dry-run', '--no-push', '--cwd', dir, '--json'], dir);
+  assert.equal(gate(dir, '--commit').status, 0);
+  review(dir);
+  const lvl = complete();
+  assert.equal(lvl.status, 1); assert.match(lvl.stderr, /GATE_LEVEL/); assert.match(lvl.stderr, /gate\.mjs --dod/);
+  assert.equal(gate(dir, '--dod').status, 0);
+  review(dir);
+  const ok = complete();
+  assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+  const j = JSON.parse(ok.stdout.trim().split('\n').pop());
+  assert.equal(j.summary.gate.level, 'dod');
+  assert.match(j.jira.comment, /경량\+DoD\(dod\)/); assert.match(j.jira.comment, /gate\.mjs --main/); assert.match(j.jira.comment, /테스트 검사 0/);
 });

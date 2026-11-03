@@ -51,10 +51,10 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | plan | dev-guide 초안 + 레인·DoD 설계 → **사용자 승인** | Workflow `workflows/plan.js` → `issue-set.mjs --merge --from plan` → request_user_input | 승인 시 `.draft` 확정 · `wiki-row.mjs` forecast · `--stage implement` |
 | implement | 코드 작성 — 레인 1개면 메인 직접. 2개+ 는 **Herdr 안 + `herdr.lanes` 가 `implement`/`all`** 이면 레인마다 worktree + kind(claude·codex·grok) pane 이 고치고 메인이 패치를 회수·적용, Herdr 밖이면 메인이 순차 구현 | 직접 / `herdr-lanes.mjs implement`([herdr-lanes.md](references/herdr-lanes.md) §implement) | verify |
 | verify | **Codex 판정** → (Codex 가 못 채운 자리에만) 워크플로 ≤4레인 → **메인이 확정/기각** → 기록 | `codex-review.sh` → `scripts/lanes-codex.mjs verify --json` → `issue-set.mjs --review` | gate |
-| gate | 커밋 전 경량(컴파일·린트) / push 전 — `gate.push_level` 이 `related` 면 **관련 테스트**(DoD 프로브 → 바뀐 스택의 컴파일·린트·관련 테스트 → DoD tests), `full`(기본)이면 전량(빌드·전체 테스트·extra까지) | `gate.mjs --commit` / `gate.mjs --related` 또는 `--full` | commit / push |
+| gate | 커밋 전 경량(컴파일·린트) / push 전 — `gate.push_level` 이 `dod` 면 **경량+DoD**(DoD 프로브 → 바뀐 스택의 컴파일·린트 → DoD tests · 테스트 선택 단계 없음 — Herdr 멀티 이슈 병렬에 권장), `related` 면 **관련 테스트**(DoD 프로브 → 바뀐 스택의 컴파일·린트·관련 테스트 → DoD tests), `full`(기본)이면 전량(빌드·전체 테스트·extra까지) | `gate.mjs --commit` / `gate.mjs --dod`·`--related`·`--full` | commit / push |
 | commit·push | 평소처럼 `git commit` / `git push` — 훅이 판정 | 훅 (`hooks/hooks.json`) · 무인은 `safe-commit.mjs` | 다음 구현 또는 complete |
 | complete | push 전 게이트·리뷰 신선 확인 → push → 상태 아카이브 → wiki closure → Jira 전이·댓글 | `issue-complete.mjs` → `wiki-row.mjs` → `wiki-lint.mjs` → MCP | 사람 머지 대기 (자동 머지 금지) |
-| main 배치 | (`push_level=related`) 여러 이슈를 기본 브랜치에 머지한 **뒤 한 번** — 전 스택 빌드·전체 테스트·extra. 이슈마다 돌리지 않는다 | `gate.mjs --main` (`--status` = 마지막 PASS 이후 커밋 수) | 배포·릴리즈 전 PASS 확인. FAIL 이면 용의 커밋부터 |
+| main 배치 | (`push_level=dod`·`related` — **dod 면 테스트 검증은 여기뿐이라 필수**) 여러 이슈를 기본 브랜치에 머지한 **뒤 한 번**(dod 는 머지 ~5건마다 권장) — 전 스택 빌드·전체 테스트·extra. 이슈마다 돌리지 않는다 | `gate.mjs --main` (`--status` = 마지막 PASS 이후 커밋 수) | 배포·릴리즈 전 PASS 확인. FAIL 이면 용의 커밋부터 |
 
 ## 3. 훅이 막았을 때 — 사유 코드는 Codex 차단 메시지의 `[jira-harness] git <op>: <CODE> — …` 한 줄
 
@@ -64,8 +64,8 @@ node "<P>/scripts/issue-start.mjs" --status --json
 | `NO_STATE` | 이슈가 시작되지 않았다 | `issue-start.mjs <KEY>` |
 | `COMPLETED` | complete 가 상태를 아카이브한 브랜치에 **코드** 커밋 | closure 문서(CHANGELOG·wiki)는 docs-only 로 통과한다. 코드를 더 바꾸려면 `issue-start.mjs <KEY> --adopt` 로 다시 시작 |
 | `DIRTY_TREE` | 게이트가 본 트리 ≠ 커밋될 트리(unstaged·untracked) | 전부 `git add -A` 하거나 `gate.mjs --commit --stage-all` |
-| `NO_GATE` `GATE_STALE` `GATE_FAIL` `GATE_LOG_*` | 게이트 미실행·낡음·실패·로그 불일치 | `gate.mjs --commit` (push 면 사유에 적힌 `--related`/`--full`) 재실행 |
-| `GATE_LEVEL` | push 인데 그 단계 게이트 기록이 없다(경량뿐 · 또는 `push_level=full` 인데 관련 테스트 기록) | 사유에 적힌 명령 — `push_level=related` 면 `gate.mjs --related`, 아니면 `gate.mjs --full` |
+| `NO_GATE` `GATE_STALE` `GATE_FAIL` `GATE_LOG_*` | 게이트 미실행·낡음·실패·로그 불일치 | `gate.mjs --commit` (push 면 사유에 적힌 `--dod`/`--related`/`--full`) 재실행 |
+| `GATE_LEVEL` | push 인데 그 단계 게이트 기록이 없다(경량뿐 · 또는 `push_level` 보다 약한 기록 — `full` 인데 관련 테스트 기록, `related` 인데 dod 기록. 더 강한 기록은 받는다) | 사유에 적힌 명령 — `push_level=dod` 면 `gate.mjs --dod`, `related` 면 `gate.mjs --related`, 아니면 `gate.mjs --full` |
 | `NO_REVIEW` `REVIEW_STALE` | 리뷰 없음 · 리뷰 이후 코드 변경 | verify — 이미 한 번 했으면 **델타 패스**만 |
 | `REVIEW_BLOCKERS` | 확정 blocker 미해결 | 수정 → 델타 패스 |
 | `BAD_STATE` | 상태 JSON 이 스키마에 안 맞는다(손으로 고친 흔적) | `issue-set.mjs` 로 값을 고치거나 `issue-start.mjs <KEY>` 로 다시 만든다 |

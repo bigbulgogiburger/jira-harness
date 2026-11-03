@@ -246,8 +246,8 @@
         },
         "push_level": {
           "type": "string",
-          "enum": ["full", "related"],
-          "description": "push·complete 가 요구하는 게이트 — full(기본: 이슈마다 전량) · related(이슈마다 compile·lint·관련 테스트·DoD — 전체 스위트·build·extra 는 기본 브랜치에서 여러 이슈 머지 뒤 gate.mjs --main 1회)"
+          "enum": ["full", "related", "dod"],
+          "description": "push·complete 가 요구하는 게이트(이보다 강한 단계 기록도 받는다) — full(기본: 이슈마다 전량) · related(이슈마다 compile·lint·관련 테스트·DoD — 전체 스위트·build·extra 는 기본 브랜치에서 여러 이슈 머지 뒤 gate.mjs --main 1회) · dod(이슈마다 compile·lint·DoD 프로브·DoD tests 만 — 관련 테스트도 돌지 않는다. 여러 이슈를 머지한 뒤 기본 브랜치에서 gate.mjs --main 1회가 필수. Herdr 멀티 이슈 병렬 운영에 권장)"
         }
       }
     },
