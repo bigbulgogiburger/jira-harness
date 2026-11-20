@@ -232,6 +232,42 @@ test('--remove-worktree <KEY>: REMOVED · 폴더·등록이 없어지고 브랜�
   assert.equal(none.out.code, 'NO_WORKTREE');
 });
 
+test('--remove-worktree: 작업트리 안에 260자를 넘는 경로가 있어 git 이 등록만 풀고 실패로 끝나도 남은 폴더를 마저 치운다 · 링크 대상은 그대로', () => {
+  const dir = makeRepo({ init: [] });
+  g(dir, 'config', 'core.longpaths', 'false'); // 이 PC 의 전역 설정과 무관하게 — Windows 의 git 은 이 설정 없이 260자를 넘는 경로를 지우지 못한다(다른 OS 는 그냥 지운다)
+  const shared = mkdtempSync(join(tmpdir(), 'jh-issue-wt-shared-'));
+  writeFileSync(join(shared, 'keep.txt'), 'keep');
+  assert.equal(startWt(dir, 'ABC-21').out.code, 'STARTED');
+  const wt = wtOf(dir, 'ABC-21');
+  symlinkSync(shared, join(wt, 'node_modules'), 'junction');
+  let deep = join(wt, 'build'); // 깊은 빌드 산출물 — 커밋 안 된 변경이라 --force 로 지운다
+  while (deep.length < 300) deep = join(deep, 'd'.repeat(40));
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(deep, 'Long$Name.class'), 'x');
+
+  const r = removeWt(dir, 'ABC-21', ['--force']);
+  assert.equal(r.status, 0, r.raw + r.err);
+  assert.equal(r.out.code, 'REMOVED');
+  assert.deepEqual(r.out.unlinked, ['node_modules']);
+  assert.equal(existsSync(wt), false, '남은 폴더까지 치웠다');
+  assert.equal(listWorktrees(dir).some(w => samePath(w.path, wt)), false, '등록이 풀렸다');
+  assert.equal(sh('git', ['show-ref', '--verify', '--quiet', 'refs/heads/feat/ABC-21'], dir).status, 0, '브랜치는 남는다');
+  assert.equal(readFileSync(join(shared, 'keep.txt'), 'utf8'), 'keep', '링크 대상은 그대로');
+});
+
+test('--remove-worktree: git 이 거절한 작업트리(잠금)는 지우지 않는다 — REMOVE_FAILED · 폴더와 등록이 그대로', () => {
+  const dir = makeRepo({ init: [] });
+  assert.equal(startWt(dir, 'ABC-22').out.code, 'STARTED');
+  const wt = wtOf(dir, 'ABC-22');
+  g(dir, 'worktree', 'lock', wt);
+
+  const r = removeWt(dir, 'ABC-22');
+  assert.equal(r.status, 1, r.raw + r.err);
+  assert.equal(r.out.code, 'REMOVE_FAILED');
+  assert.ok(existsSync(join(wt, 'backend/App.java')), '폴더는 그대로');
+  assert.ok(listWorktrees(dir).some(w => samePath(w.path, wt)), '등록도 그대로');
+});
+
 test('--remove-worktree: 커밋 안 된 변경이 있으면 DIRTY(exit 1) · --force 면 지운다(경로로도 받는다) · 작업트리 안에서 부르면 IN_WORKTREE', () => {
   const dir = makeRepo({ init: [] });
   assert.equal(startWt(dir, 'ABC-12').out.code, 'STARTED');
@@ -350,6 +386,32 @@ test('--remove-worktree <KEY>: 그 이슈의 레인 작업트리·레인 브랜�
   assert.equal(readFileSync(join(shared, 'keep.txt'), 'utf8'), 'keep', '링크 대상은 그대로');
   assert.ok(existsSync(patch), '회수해 둔 패치는 지우지 않는다');
   assert.equal(g(dir, 'symbolic-ref', '--short', 'HEAD'), 'main');
+});
+
+test('--remove-worktree <KEY>: 레인 작업트리의 무시되는 폴더(빌드 산출물)에 260자를 넘는 경로가 있어도 한 번에 치운다 — 장부에 없는 레인도 · 남긴 것이 없다', () => {
+  const dir = makeRepo({ init: [] });
+  g(dir, 'config', 'core.longpaths', 'false'); // Windows 의 git 은 이 설정 없이 260자를 넘는 경로를 지우지 못하고 등록만 푼 채 실패로 끝난다
+  assert.equal(startWt(dir, 'ABC-23').out.code, 'STARTED');
+  const wt = wtOf(dir, 'ABC-23');
+  g(wt, 'commit', '-q', '--allow-empty', '-m', 'phase 0');
+  const a = makeLane(dir, 'feat-ABC-23', 'a', { base: 'feat/ABC-23' });
+  const b = makeLane(dir, 'feat-ABC-23', 'b', { base: 'feat/ABC-23', ledger: false });
+  for (const lane of [a, b]) { // node_modules/ 는 픽스처의 .gitignore 가 무시한다 — 변경으로 잡히지 않는 깊은 산출물
+    let deep = join(lane, 'node_modules');
+    while (deep.length < 300) deep = join(deep, 'd'.repeat(40));
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'Long$Name.class'), 'x');
+    assert.equal(g(lane, 'status', '--porcelain'), '', '픽스처: 깊은 폴더는 변경으로 잡히지 않는다');
+  }
+
+  const r = removeWt(dir, 'ABC-23');
+  assert.equal(r.status, 0, r.raw + r.err);
+  assert.equal(r.out.code, 'REMOVED');
+  assert.deepEqual(r.out.lanes.removed.map(x => x.branch).sort(), ['lane/feat-ABC-23/a', 'lane/feat-ABC-23/b']);
+  assert.deepEqual([...r.out.lanes.branches].sort(), ['lane/feat-ABC-23/a', 'lane/feat-ABC-23/b']);
+  assert.deepEqual(r.out.lanes.kept, [], '실패 사유가 함께 실리지 않는다');
+  for (const p of [wt, a, b]) assert.equal(existsSync(p), false, p);
+  assert.equal(listWorktrees(dir).length, 1, '메인 체크아웃만 남는다');
 });
 
 test('--remove-worktree <KEY>: 회수되지 않은 레인 변경은 지우지 않는다 — 장부가 「적용됨」이어도 지금 내용이 회수해 둔 패치와 다르면 남긴다 · 장부에 없는 레인도 남긴다 · --force 는 레인에 듣지 않는다', () => {

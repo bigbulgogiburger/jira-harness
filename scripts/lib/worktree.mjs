@@ -80,6 +80,7 @@ export function removeDirSafely(path) {
 /**
  * 작업트리를 지운다 — 링크를 먼저 끊고 `git worktree remove`. 브랜치는 지우지 않는다(커밋은 브랜치에 남는다).
  * force 가 아니면 커밋 안 된 변경(추적·비추적)이 있을 때 지우지 않고 그 목록을 돌려준다. 메인 체크아웃·등록되지 않은 경로는 거부한다.
+ * git 이 등록은 풀고 폴더를 다 지우지 못한 채 끝나면(성공으로든 실패로든) 남은 폴더를 마저 치운다. git 이 거절해 등록이 남아 있으면 손대지 않는다.
  * 반환 { ok, code?, reason?, unlinked?, dirty? } — code: NOT_A_WORKTREE · MAIN_WORKTREE · DIRTY · UNLINK_FAILED · REMOVE_FAILED
  */
 export function removeWorktree(path, { repoDir, force = false } = {}) {
@@ -97,8 +98,14 @@ export function removeWorktree(path, { repoDir, force = false } = {}) {
   const { cut, failed } = unlinkLinks(abs);
   if (failed.length) return { ok: false, code: 'UNLINK_FAILED', reason: `링크를 끊지 못해 지우지 않았다 — ${failed[0]}`, unlinked: cut };
   const rm = git(['worktree', 'remove', '--force', abs], { cwd: repoDir, allowFail: true });
-  if (rm.status !== 0) return { ok: false, code: 'REMOVE_FAILED', reason: (rm.err || rm.out || 'git worktree remove 실패').split('\n')[0], unlinked: cut };
-  if (existsSync(abs)) { // git 이 폴더를 남기고 성공으로 끝난 경우(잠긴 파일 등) — 등록은 풀렸으므로 남은 폴더만 치운다
+  if (rm.status !== 0) {
+    // git 이 거절했으면(잠긴 작업트리 등) 등록이 그대로다 — 손대지 않는다. 목록을 읽지 못했을 때도(빈 목록) 모르는 것이므로 손대지 않는다
+    const after = listWorktrees(repoDir);
+    if (!after.length || after.some(w => samePath(w.path, abs))) return { ok: false, code: 'REMOVE_FAILED', reason: (rm.err || rm.out || 'git worktree remove 실패').split('\n')[0], unlinked: cut };
+  }
+  // 등록은 풀렸는데 폴더가 남은 경우 — git 이 성공으로 끝내고도 남기거나(잠긴 파일 등), 검사를 통과한 뒤 다 지우지 못해 실패로 끝낸다
+  // (Windows 에서 260자를 넘는 경로는 `Filename too long` — 빌드 산출물이 깊은 작업트리에서 흔하다). 링크는 위에서 끊었으니 남은 폴더만 치운다
+  if (existsSync(abs)) {
     const left = removeDirSafely(abs);
     if (!left.ok) return { ok: false, code: 'REMOVE_FAILED', reason: `등록은 풀었지만 폴더가 남았다 — ${left.reason}`, unlinked: cut };
   }
