@@ -1265,7 +1265,8 @@ test('complete 뒤(상태 아카이브) 같은 브랜치: closure docs 커밋은
   g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
   const archive = join(dir, '.claude/runtime/issues/archive');
   mkdirSync(archive, { recursive: true });
-  writeFileSync(join(archive, 'feat-ABC-1-20260101T000000Z.json'), JSON.stringify(newState('feat/ABC-1', ['ABC-1'])) + '\n');
+  // issue-complete 가 쓰는 이름 그대로(`<slug>-<YYYYMMDD-HHMM>.json`) — latestArchivedState 는 이 꼴만 상태 아카이브로 본다
+  writeFileSync(join(archive, 'feat-ABC-1-20260101-0000.json'), JSON.stringify(newState('feat/ABC-1', ['ABC-1'])) + '\n');
   edit(dir, 'docs/README.md', '# closure\n');
   const docs = hook(dir, "git add -A && git commit -q -F - <<'EOF'\ndocs: closure\nEOF");
   assert.equal(docs.decision, 'pass'); assert.ok(docs.reason.includes('DOCS_ONLY'), docs.reason);

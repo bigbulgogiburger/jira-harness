@@ -5,7 +5,7 @@
 import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, symlinkSync, rmSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -524,6 +524,25 @@ test('--remove-worktree <KEY>: 다른 이름의 브랜치(--adopt)에서 돌린 
   assert.equal(hasBranch(dir, 'lane/fix-ABC-30-hot/a'), false);
   assert.ok(existsSync(other), '다른 이슈의 레인 작업트리는 그대로');
   assert.equal(hasBranch(dir, 'lane/feat-ABC-31/a'), true);
+});
+
+test('--remove-worktree <KEY>: 마감해 아카이브로 옮긴 이슈도 채택한 브랜치(--adopt)의 레인을 찾는다 — 함께 옮긴 사이드카(….plan.json)를 상태로 읽지 않는다', () => {
+  const dir = makeRepo({ init: [] });
+  g(dir, 'checkout', '-q', '-b', 'fix/ABC-30-hot');
+  assert.equal(run(dir, ['ABC-30']).out.code, 'STARTED');
+  const mine = makeLane(dir, 'fix-ABC-30-hot', 'a', { base: 'fix/ABC-30-hot' });
+  g(dir, 'checkout', '-q', 'main');
+  // issue-complete 가 옮기는 모양 그대로 — 상태는 archive/<slug>-<YYYYMMDD-HHMM>.json, 사이드카는 같은 이름에 .plan.json(이름순으로 상태보다 뒤다)
+  const arch = join(rtOf(dir), 'issues', 'archive');
+  mkdirSync(arch, { recursive: true });
+  renameSync(stateFile(dir, 'fix-ABC-30-hot'), join(arch, 'fix-ABC-30-hot-20261101-0900.json'));
+  writeFileSync(join(arch, 'fix-ABC-30-hot-20261101-0900.plan.json'), JSON.stringify({ guides: {}, touched: [], dod: [] }));
+
+  const r = removeWt(dir, 'ABC-30');
+  assert.equal(r.status, 0, r.raw + r.err);
+  assert.equal(r.out.code, 'REMOVED');
+  assert.equal(existsSync(mine), false, '마감한 뒤에도 그 이슈의 레인 작업트리를 치운다');
+  assert.equal(hasBranch(dir, 'lane/fix-ABC-30-hot/a'), false);
 });
 
 test('--remove-worktree <KEY>: 등록은 풀렸는데 폴더만 남은 레인 자리는 치운다 — 실행기가 레인 작업트리를 파는 자리일 때만 · 장부가 가리키는 다른 폴더와 체크아웃이 든 폴더는 손대지 않는다', () => {

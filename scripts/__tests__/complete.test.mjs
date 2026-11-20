@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { newState, writeState, readState } from '../lib/config.mjs';
+import { newState, writeState, readState, latestArchivedState } from '../lib/config.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = join(HERE, '..');
@@ -302,4 +302,23 @@ test('리뷰가 낡으면 REVIEW_STALE (게이트만 다시 돌려서는 통과�
   assert.equal(out(r).code, 'REVIEW_STALE');
   addReview(dir); // 델타 패스 기록
   assert.equal(complete(dir, '--dry-run').status, 0);
+});
+
+test('latestArchivedState — 그 slug 의 상태 아카이브만 고른다: 함께 옮긴 사이드카(….plan.json)와 이름이 그 slug 로 시작하는 다른 이슈(다중 키)의 아카이브는 고르지 않는다 · 같은 분에 둘이면 번호가 큰 쪽', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jh-archive-'));
+  const cfg = { runtime_dir: '.claude/runtime' };
+  const arch = archiveDir(dir);
+  assert.equal(latestArchivedState(cfg, dir, 'feat-ABC-1'), null, '아카이브 폴더가 없으면 null');
+  mkdirSync(arch, { recursive: true });
+  const put = name => writeFileSync(join(arch, name), '{}\n');
+  // 다른 이슈의 것만 있을 때 — 다중 키 브랜치(feat/ABC-1-2)와 그 사이드카
+  for (const n of ['feat-ABC-1-2-20261105-1012.json', 'feat-ABC-1-2-20261105-1012.plan.json']) put(n);
+  assert.equal(latestArchivedState(cfg, dir, 'feat-ABC-1'), null, '다중 키 형제의 아카이브를 이 이슈의 것으로 읽으면 안 된다');
+  assert.equal(latestArchivedState(cfg, dir, 'feat-ABC-1-2'), '.claude/runtime/issues/archive/feat-ABC-1-2-20261105-1012.json', '사이드카(.plan.json)가 아니라 상태 파일');
+  // 자기 아카이브가 생기면 그것 — 사이드카는 이름순으로 상태보다 뒤에 오지만 고르지 않는다
+  for (const n of ['feat-ABC-1-20261101-0900.json', 'feat-ABC-1-20261101-0900.plan.json', 'feat-ABC-1-20261101-0900.review.json']) put(n);
+  assert.equal(latestArchivedState(cfg, dir, 'feat-ABC-1'), '.claude/runtime/issues/archive/feat-ABC-1-20261101-0900.json');
+  // 다시 시작해 다시 마감한 것 — 더 늦은 시각이 이기고, 같은 분이면 번호(-2)가 붙은 쪽이 나중이다
+  for (const n of ['feat-ABC-1-20261103-1500.json', 'feat-ABC-1-20261103-1500-2.json', 'feat-ABC-1-20261103-1500-2.plan.json']) put(n);
+  assert.equal(latestArchivedState(cfg, dir, 'feat-ABC-1'), '.claude/runtime/issues/archive/feat-ABC-1-20261103-1500-2.json');
 });

@@ -123,12 +123,19 @@ export function statePath(cfg, root, slug) {
   return join(root, cfg.runtime_dir, 'issues', `${slug}.json`);
 }
 
-/** issue-complete 가 옮긴 아카이브 상태 중 이 슬러그의 최신 파일(루트 기준 상대 경로). 없으면 null. */
+/**
+ * issue-complete 가 옮긴 아카이브 상태 중 이 슬러그의 최신 파일(루트 기준 상대 경로). 없으면 null.
+ * 아카이브 이름은 `<slug>-<YYYYMMDD-HHMM>[-<n>].json` 이다. 접두만 보면 함께 옮긴 사이드카(`….plan.json` — 상태보다 뒤에 정렬된다)와
+ * 이름이 이 slug 로 시작하는 다른 이슈(다중 키 브랜치 `<slug>-<키>`)의 아카이브가 걸린다 — 꼬리를 형식으로 맞춰 상태 파일만 고른다.
+ */
 export function latestArchivedState(cfg, root, slug) {
   const dir = join(root, cfg.runtime_dir, 'issues', 'archive');
   if (!existsSync(dir)) return null;
-  const names = readdirSync(dir).filter(f => f.startsWith(`${slug}-`) && f.endsWith('.json')).sort();
-  return names.length ? `${cfg.runtime_dir}/issues/archive/${names[names.length - 1]}` : null;
+  const mine = readdirSync(dir).map(f => {
+    const m = f.startsWith(`${slug}-`) ? /^(\d{8}-\d{4})(?:-(\d+))?\.json$/.exec(f.slice(slug.length + 1)) : null;
+    return m ? { f, stamp: m[1], n: Number(m[2] ?? 1) } : null;
+  }).filter(Boolean).sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : a.n - b.n));
+  return mine.length ? `${cfg.runtime_dir}/issues/archive/${mine[mine.length - 1].f}` : null;
 }
 
 export function readState(file) {
