@@ -15,8 +15,8 @@ const RESP = (name) => join(HERE, 'wf', name);
 const NODE = process.execPath;
 
 // wf-sim 은 meta 를 리터럴이 평가되는 자리에서 잡는다 — 경고는 한 건도 허용하지 않는다(meta 미수집도 실패).
-function sim(file, args, responses) {
-  const argv = [SIM, WF(file), '--args', JSON.stringify(args), '--json'];
+function sim(file, args, responses, extra = []) {
+  const argv = [SIM, WF(file), '--args', JSON.stringify(args), '--json', ...extra];
   if (responses) argv.push('--responses', RESP(responses));
   const r = spawnSync(NODE, argv, { encoding: 'utf8', windowsHide: true });
   assert.ok(r.stdout, `wf-sim 이 출력을 내지 않았다: ${r.stderr}`);
@@ -33,7 +33,7 @@ function ok(out) {
 
 const IMPL_ARGS = {
   lanes: [
-    { name: 'be', model: 'opus', files: ['backend/src/A.java'], worktree: true, brief: '엔티티와 서비스를 계약대로 구현한다' },
+    { name: 'be', model: 'opus', files: ['backend/src/A.java'], worktree: false, brief: '엔티티와 서비스를 계약대로 구현한다' },
     { name: 'fe', model: 'sonnet', files: ['frontend/src/App.vue'], brief: '화면에서 실패를 보이게 한다' }
   ],
   guidePaths: { 'ABC-1': 'docs/ABC-1-dev-guide.md' },
@@ -59,14 +59,13 @@ const VERIFY_ARGS = {
   ts: '2026-01-01T00:00:00Z'
 };
 
-// ── (a) implement: 레인 2개 → agent 2회 · worktree 플래그 반영 · 반환 모양
-test('implement: 레인마다 1콜, 선언한 모델과 worktree 격리가 그대로 간다', () => {
+// ── (a) implement: 레인 2개 → agent 2회 · 전부 한 작업트리 · 반환 모양
+test('implement: 레인마다 1콜, 선언한 모델로 — 레인은 전부 한 작업트리에서 돈다(격리 작업트리를 붙이지 않는다)', () => {
   const out = ok(sim('implement.js', IMPL_ARGS));
   assert.equal(out.calls.length, 2);
   assert.deepEqual(out.calls.map(c => c.label), ['lane:be', 'lane:fe']);
   assert.deepEqual(out.calls.map(c => c.model), ['opus', 'sonnet']);
-  assert.equal(out.calls[0].isolation, 'worktree');
-  assert.equal(out.calls[1].isolation, null, 'worktree 플래그 없는 레인에 격리를 붙이면 안 된다');
+  assert.deepEqual(out.calls.map(c => c.isolation), [null, null], '격리 작업트리의 변경을 메인으로 가져오는 단계가 없다 — 붙이면 구현이 떠 버린다');
   assert.ok(out.calls.every(c => c.hasSchema), '레인 반환은 schema 로 받는다');
   assert.deepEqual(out.phases, ['레인 구현']);
 
@@ -84,10 +83,40 @@ test('implement: 레인마다 1콜, 선언한 모델과 worktree 격리가 그�
   }
 });
 
-test('implement: 프롬프트에 가이드 경로·계약·담당 파일·경계 금지·테스트 실행이 모두 들어간다', () => {
-  const out = ok(sim('implement.js', IMPL_ARGS));
-  // wf-sim 은 프롬프트 본문을 돌려주지 않으므로 길이로만 존재를 본다 — 내용 단언은 아래 인자 확인으로 대신한다.
-  assert.ok(out.calls.every(c => c.promptChars > 400), '레인 프롬프트가 지시를 담기엔 너무 짧다');
+test('implement: worktree: true 레인은 받지 않는다 — 에이전트를 하나도 띄우지 않고 멈추며, 고칠 곳(사이드카의 worktree · 계획 점검 다시)을 알린다', () => {
+  const args = { ...IMPL_ARGS, lanes: [{ ...IMPL_ARGS.lanes[0], worktree: true }, IMPL_ARGS.lanes[1]] };
+  const out = sim('implement.js', args);
+  assert.match(String(out.error), /implement: 레인 be 가 worktree: true 다 — 워크플로 레인은 전부 한 작업트리에서 돈다/);
+  assert.match(String(out.error), /issue-set\.mjs --merge <사이드카> --from plan/);
+  assert.match(String(out.error), /LANE_OVERLAP/);
+  assert.equal(out.calls.length, 0, '겹치는 파일을 허용한 계획일 수 있다 — 한 레인이라도 띄우면 서로의 수정을 덮는다');
+  // 여러 개면 전부 이름을 든다 · worktree 가 없거나 false 인 레인은 그대로 돈다
+  const both = sim('implement.js', { ...IMPL_ARGS, lanes: IMPL_ARGS.lanes.map(l => ({ ...l, worktree: true })) });
+  assert.match(String(both.error), /레인 be, fe 가 worktree: true 다/);
+  assert.equal(ok(sim('implement.js', IMPL_ARGS)).calls.length, 2);
+});
+
+test('implement: 프롬프트에 가이드 경로·계약·담당 파일·경계 금지가 들어가고, 레인은 빌드·테스트를 돌리지 않는다(돌리지 않아도 done — 검증은 전부 돌아온 뒤 메인이 한 번)', () => {
+  const args = { ...IMPL_ARGS, lanes: [IMPL_ARGS.lanes[0], { ...IMPL_ARGS.lanes[1], key: 'ABC-2', dod: ['D2', { id: 'D3' }] }] };
+  const out = ok(sim('implement.js', args, null, ['--prompts']));
+  const [be, fe] = out.calls.map(c => c.prompt);
+  for (const p of [be, fe]) {
+    assert.match(p, /docs\/ABC-1-dev-guide\.md/);
+    assert.match(p, /RepairView/);
+    assert.match(p, /담당 파일 밖은 수정하지 않는다/);
+    assert.match(p, /## 검증/);
+    assert.doesNotMatch(p, /실행하지 않았으면 tests\.command 를 빈 문자열로 두고 status 는 partial/, '테스트를 못 돌리는 레인을 전부 partial 로 몰던 규칙');
+  }
+  // 레인은 전부 한 작업트리에서 돈다 — 남이 반쯤 쓴 파일까지 컴파일되므로 어느 레인도 돌리지 않는다
+  for (const p of [be, fe]) {
+    assert.match(p, /\*\*빌드·테스트·lint 를 돌리지 않는다\.\*\*/);
+    assert.match(p, /테스트를 돌리지 않은 것은 미완이 아니다 — 맡은 구현과 테스트 코드를 다 썼으면 status 는 done 이다/);
+    assert.match(p, /메인이 돌려야 할 테스트/);
+    assert.doesNotMatch(p, /그 스택의 러너로 한 번에 묶어 돌리고/, '자기 테스트를 돌리라는 규칙은 자기 작업트리가 있는 레인(Herdr 실행기)의 것이다');
+  }
+  assert.match(fe, /너는 이슈 ABC-2 의 구현 레인 "fe" 이다/);
+  assert.match(fe, /## 이 레인이 닫아야 할 DoD\n가이드 `## DoD` 의 D2, D3/);
+  assert.doesNotMatch(be, /이 레인이 닫아야 할 DoD/, 'dod 를 안 준 레인에는 그 절을 만들지 않는다');
 });
 
 // ── (b) implement: 레인 하나가 죽으면(반환 null) 조용히 빠지지 않는다

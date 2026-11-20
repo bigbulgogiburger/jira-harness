@@ -30,7 +30,8 @@ const hasMemory = A.hasMemory === true;
 const wikiHits = Array.isArray(A.wikiHits) ? A.wikiHits : [];
 const decisions = Array.isArray(A.decisions) ? A.decisions : [];
 const stamp = typeof A.ts === 'string' && A.ts ? A.ts : '(호출자가 ts 를 주지 않음 — 시각 필드는 비운다)';
-// Herdr 구현 레인(herdr.lanes = implement|all)이 켜진 프로젝트만 준다 — 없으면 kind 지시가 프롬프트에 붙지 않는다.
+// 이 세션이 구현 레인을 Herdr 실행기로 돌릴 때만 준다(issue-start --status 의 lane_runner = herdr — 설정 herdr.lanes 가 켜져 있어도 Herdr 밖 세션이면 주지 않는다).
+// 없으면 kind 지시가 프롬프트에 붙지 않고 레인은 한 작업트리(worktree 전부 false)로 설계된다.
 const herdrKinds = Array.isArray(A.herdrKinds) ? A.herdrKinds.filter((k) => typeof k === 'string' && k) : [];
 const herdrProfiles = isPlainObject(A.herdrProfiles) ? A.herdrProfiles : {};
 // 하위이슈 묶음 — /issue 는 준 이슈의 하위를 같이 가져온다. [{parent, children:[{key, summary?} | "KEY"]}] (하위가 없으면 비운다)
@@ -39,6 +40,9 @@ const subtaskGroups = (Array.isArray(A.subtasks) ? A.subtasks : [])
 const subtaskText = subtaskGroups
   .map((g) => `- ${g.parent} 의 하위: ${g.children.map((c) => (typeof c === 'string' ? c : `${c.key}${c.summary ? ` (${c.summary})` : ''}`)).join(' · ')}`)
   .join('\n');
+// 이슈 여러 건을 한 번에 받았는가(키가 둘 이상 · 하위이슈가 붙었다) — 그러면 레인의 단위가 이슈다: 이슈마다 레인 하나를 동시에 돌린다.
+// 이슈 1건을 여러 레인으로 쪼개는 것과는 다르다(그쪽은 띄우기·경계 맞추기 비용이 병렬 이득보다 컸다).
+const multiIssue = A.keys.length > 1 || subtaskGroups.length > 0;
 
 const keyList = A.keys.join(', ');
 const guideEntries = A.keys.map((k) => `- ${k} → ${A.guidePaths[k] ?? A.guidePaths[A.keys[0]] ?? '(경로 없음)'}`).join('\n');
@@ -133,6 +137,7 @@ const DESIGN_SCHEMA = {
           brief: { type: 'string' },
           kind: { type: 'string' },
           kind_reason: { type: 'string' },
+          dod: { type: 'array', items: { type: 'string' } },
         },
       },
     },
@@ -277,11 +282,11 @@ const designPrompt = [
   draftPaths.map((p) => `- ${p}`).join('\n'),
   '이슈가 여러 건이어도 가이드는 **한 장**이다. 서버·클라이언트 공통 변경을 두 장으로 쪼개지 않는다.',
   '가이드 문서의 절 구성(이 순서, 이 제목):',
-  '1. `## 요구` — 검증 가능한 문장 목록. 근거(이슈 키·결정)를 함께.',
+  '1. `## 요구` — 검증 가능한 문장 목록. 문장마다 id(`R1`, `R2` …)를 붙인다 — 요구 JSON 의 id 를 그대로 쓴다. 근거(이슈 키·결정)를 함께.',
   '2. `## 범위 밖` — 이번에 하지 않는 것. 비면 "없음" 이라고 쓴다.',
   '3. `## 설계` — 무엇을 어디에 어떻게. 손댈 파일 경로를 본문에 적고, 기존 패턴을 따르는지/벗어나는지 밝힌다.',
   '4. `## 작업 항목` — 레인별 구성 요소 목록. 레인 경계(한쪽이 부르고 다른 쪽이 받는 지점)를 명시한다.',
-  '5. `## DoD` — 표. 열: id · 확인할 것 · 프로브 명령 · 기대 · 사람 확인 여부.',
+  '5. `## DoD` — 표. 열: id · 확인할 것 · 프로브 명령 · 기대 · 사람 확인 여부. 「확인할 것」 은 그 항목이 재는 요구 id 를 괄호로 시작한다 — 예: `(R1, R3) …`. 요구 id 는 모두 어느 DoD 엔가 나와야 하고, 표의 id 는 사이드카 `dod[].id` 와 같아야 한다 — 반영 전에 스크립트가 이 대응을 글자로 대조한다.',
   '6. `## 리스크` — 되돌리기 비싼 결정과 그 완화책.',
   '',
   '## 써야 할 파일 2 — 사이드카 JSON',
@@ -290,23 +295,31 @@ const designPrompt = [
   '- `guides`: {이슈 키: 확정 dev-guide 경로}. `.draft` 가 **아닌** 아래 확정 경로를 그대로 쓴다:',
   guideEntries,
   '- `touched`: 이번에 수정/추가할 파일 경로 배열(프로젝트 루트 기준 상대 경로).',
-  '- `lanes`: [{name, model, files, worktree, brief}]. name 은 짧은 식별자, model 은 opus/sonnet/haiku 중 난이도에 맞게, files 는 그 레인이 소유하는 경로 glob, worktree 는 두 레인이 같은 파일을 동시에 고칠 때만 true, brief 는 그 레인이 할 일 2~3문장.',
-  '  레인은 파일 소유가 겹치지 않게 나눈다. 나눌 근거가 없으면 레인 1개로 둔다(억지로 병렬화하지 않는다).',
+  `- \`lanes\`: [{name, model, files, worktree, brief}]. name 은 짧은 식별자(영문 소문자로 시작하고 레인끼리 서로 다르게 — 결과 파일과 작업트리 브랜치 이름이 된다), model 은 opus/sonnet/haiku 중 난이도에 맞게, files 는 그 레인이 소유하는 경로 glob, ${herdrKinds.length ? 'worktree 는 두 레인이 같은 파일을 동시에 고칠 때만 true' : 'worktree 는 false'}, brief 는 그 레인이 할 일 2~3문장.`,
+  ...(multiIssue ? [
+    `  **이슈 여러 건을 한 번에 처리한다(${keyList})** — 레인의 단위는 이슈다. Phase 0(아래)가 아닌 **이슈마다 레인 하나**를 두고 동시에 구현한다. 레인 객체에 \`key\`(그 레인이 맡은 이슈 키)를 추가로 쓰고, name 은 키를 소문자로 줄인 \`abc-12\` 꼴(\`[a-z][a-z0-9_-]{0,31}\`)로 한다. 부모 이슈처럼 고칠 코드가 없는 키에는 레인을 만들지 않는다.`,
+    '  같은 파일을 고치는 이슈들은 쪼개지 말고 한 레인에 합친다(`key` 는 그중 하나, brief 에 함께 맡은 키를 전부 적는다). 레인이 4개를 넘으면 가까운 이슈끼리 묶어 4개 이하로 줄인다 — 동시에 도는 빌드·테스트는 서로를 느리게 한다. 가이드 `## 작업 항목` 첫머리에 「레인 ↔ 이슈」 대응을 레인마다 한 줄씩 적는다(묶었으면 묶은 이유까지) — 사람이 승인할 때 이 대응을 본다.',
+    '  다른 이슈가 기대는 선행 작업(DDL·공통 계약·공유 모듈)은 레인으로 만들지 않는다 — 가이드 `## 작업 항목` 에 **"Phase 0 — 메인이 먼저 구현하고 커밋"** 이라고 적는다.',
+    ...(herdrKinds.length ? [] : [
+      '  이 세션은 구현 레인을 Herdr 실행기로 돌리지 않는다 — **모든 레인의 worktree 는 false** 다. 레인들은 한 작업트리에서 동시에 돈다(격리 worktree 의 변경을 메인으로 가져오는 단계는 Herdr 실행기에만 있다). 그래서 두 레인의 files 가 한 파일이라도 겹치면 안 된다 — 겹치면 한 레인으로 합친다.',
+    ]),
+  ] : herdrKinds.length ? [
+    '  레인은 파일 소유가 겹치지 않게 나눈다. 나눌 근거가 없으면 레인 1개로 둔다(억지로 병렬화하지 않는다).',
+  ] : [
+    '  **레인은 1개로 둔다** — 이슈 1건은 드라이버 세션 하나가 한 작업트리에서 직접 구현한다. 한 이슈를 레인으로 나눠 맡기면 띄우기·경계 맞추기·결과 합치기가 붙고, 그 비용이 병렬 이득보다 컸다. files 는 손댈 경로 전체, brief 에는 구현 순서를 적는다.',
+    '  예외는 하나 — 재료 2(확정 결정)에 사용자가 이 이슈의 병렬 구현을 명시했을 때만 2개 이상으로 나누고, 그때는 파일 소유가 겹치지 않게 한다.',
+  ]),
   ...(herdrKinds.length ? [
     `  **Herdr 구현 레인이 켜져 있다** — 레인마다 \`kind\` 를 ${herdrKinds.join(' / ')} 중 하나로 고르고 \`kind_reason\` 한 줄(왜 그 kind 인가)을 함께 적는다. 레인은 각자 worktree 에서 그 kind 의 에이전트가 돈다(worktree 는 실행기가 항상 판다 — worktree 플래그와 무관). 고르지 않으면 실행기가 풀 순서대로 기계적으로 배정한다.`,
     `  kind 프로파일(가설 — 레인 기록이 쌓이기 전까지의 기본값. 근거가 얇은 kind 에 핵심 레인을 몰지 않는다): ${herdrKinds.map((k) => `${k} = ${herdrProfiles[k] ?? '(프로파일 없음)'}`).join(' · ')}`,
   ] : []),
+  '  레인이 2개 이상이면 레인마다 `dod` 를 쓴다 — 그 레인이 통과시켜야 하는 DoD 의 id 배열(예 `["D1", "D3"]` · 아래 `dod` 의 id 와 글자까지 같게). 레인은 구현 중 이 항목들의 테스트만 한 번에 묶어 돌린다. 합친 뒤에야 잴 수 있는 항목(여러 레인에 걸친 확인 · 사람 확인)은 어느 레인에도 넣지 않는다 — 드라이버가 합친 트리에서 본다.',
   ...(subtaskGroups.length ? [
     '  **하위이슈 구성** — 이 브랜치는 부모 이슈와 그 하위이슈를 **한 번에** 처리한다(하위 본문도 위 이슈 본문 재료에 같이 실려 있다):',
     ...subtaskText.split('\n').map((l) => `  ${l}`),
     '  - 가이드는 여전히 한 장이다 — `## 요구`·`## 작업 항목` 을 하위이슈 키별로 나눠 쓴다.',
     '  - **하위이슈마다 DoD 가 최소 1건** 있어야 하고 그 DoD 의 text 는 `[KEY]` 로 시작한다(예: `[ABC-12] …`) — 하위의 인수조건을 DoD 로 옮긴다. DoD 없이 빠진 하위가 있으면 scope 검증이 BLOCK 한다.',
-    '  - 다른 하위가 의존하는 선행 하위(DDL·공통 계약·공유 모듈)는 레인으로 만들지 않는다 — 가이드 `## 작업 항목` 에 **"Phase 0 — 메인이 먼저 구현하고 커밋"** 이라고 적는다.',
-    ...(herdrKinds.length ? [
-      '  - Herdr 구현 레인이 켜져 있으므로 Phase 0 가 아닌 **하위이슈마다 레인 하나**를 둔다. 레인 객체에 `key`(그 하위의 이슈 키)를 추가로 쓰고, name 은 키를 소문자로 줄인 `abc-12` 꼴(`[a-z][a-z0-9_-]{0,31}`)로 한다. 다른 하위와 파일을 나눠 쓰면 쪼개지 말고 한 레인에 합친다.',
-    ] : [
-      '  - Herdr 구현 레인이 꺼져 있다 — **모든 레인의 worktree 는 false**(한 작업트리에서 처리한다. worktree 로 격리해도 그 변경을 메인으로 가져오는 단계는 Herdr 실행기에만 있다). 하위를 레인으로 나누는 것은 파일 소유가 겹치지 않을 때만이고, 겹치거나 근거가 없으면 레인 1개로 두고 brief 에 하위 처리 순서를 적는다. 레인이 하위 한 건을 맡으면 레인 객체에 `key` 를 추가로 쓴다.',
-    ]),
+    '  - 레인은 위 규칙 그대로 하위이슈마다 하나다 — 다른 하위가 기대는 선행 하위는 Phase 0 로 빼고, 레인의 `key` 에는 그 하위의 키를 쓴다.',
   ] : []),
   '- `dod`: [{id, text, probe, tests, cwd, expect, human}]. id 는 D1, D2 …',
   '  **테스트를 도는 항목은 `tests: {stack, select[]}` 로 쓴다** — `.claude/harness.json` 의 그 스택에 `dod_tests` 가 있을 때. 게이트가 스택별로 선택을 합쳐 **한 번만** 돌리고 리포트로 항목마다 판정한다(probe 는 null).',

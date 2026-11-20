@@ -1,4 +1,5 @@
 // 관련 테스트 게이트(--related) · 경량+DoD 게이트(--dod) · push_level · 기본 브랜치 배치(--main)
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';

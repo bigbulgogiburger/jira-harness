@@ -2,9 +2,11 @@
 //   node fake-runner.mjs gradle [--tests '<p>']…   .fake-runner.json { suites: [{name, tests, failures?, skipped?, default?, display?}], compile_error? }
 //        지난 TEST-*.xml 을 지우고(Gradle 과 같다) 선택에 걸린 스위트만 쓴다. 파일명은 TEST-<name>.xml · <testsuite name> 은 display ?? name(Gradle 은 클래스 @DisplayName 을 쓴다). 선택이 없으면 default !== false 인 스위트 전부. 실패가 있으면 exit 1.
 //        compile_error 면 아무것도 지우거나 쓰지 않고 exit 1 — 지난 XML 이 남은 형태
+//        crash_on: '<패턴>' — 그 패턴이 --tests 로 온 호출만 아무것도 지우거나 쓰지 않고 exit 1(리포트를 쓰기 전에 죽은 러너 — 같은 설정으로 앞 호출은 정상, 뒤 호출만 죽게 할 때)
+//        mtime_skew_ms: N — 쓴 XML 의 mtime 을 지금 + N 으로 찍는다(바로 뒤에 도는 실행의 시작 시각보다 늦게 찍힌 리포트 — 시각만으로는 「이번 실행 것」과 구분되지 않는 상태)
 //   node fake-runner.mjs vitest [<경로 필터>]… [--reporter=…] [--outputFile.json=<파일>]   .fake-runner.json { files: [{name, passed, failed?}] }
 //        필터가 없으면 전부 · 있으면 경로에 부분 문자열로 걸리는 파일만. 실패가 있으면 exit 1
-import { appendFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const [mode, ...args] = process.argv.slice(2);
@@ -15,11 +17,16 @@ const rx = g => new RegExp(`^${g.split('*').map(x => x.replace(/[.+?^${}()|[\]\\
 if (mode === 'gradle') {
   if (cfg.compile_error) { console.log('> Task :compileTestJava FAILED'); process.exit(1); }
   const pats = []; for (let i = 0; i < args.length; i++) if (args[i] === '--tests') pats.push(args[++i]);
+  if (cfg.crash_on && pats.includes(cfg.crash_on)) { console.log('> Gradle Test Executor 1 crashed'); process.exit(1); }
   const dir = 'build/test-results/test';
   mkdirSync(dir, { recursive: true });
   for (const f of readdirSync(dir)) if (/^TEST-.*\.xml$/.test(f)) rmSync(join(dir, f));
   const chosen = (cfg.suites ?? []).filter(s => (pats.length ? pats.some(p => rx(p).test(s.name)) : s.default !== false));
-  for (const s of chosen) writeFileSync(join(dir, `TEST-${s.name}.xml`), `<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="${s.display ?? s.name}" tests="${s.tests}" skipped="${s.skipped ?? 0}" failures="${s.failures ?? 0}" errors="0" timestamp="2026-09-23T00:00:00" hostname="h" time="0.1">\n</testsuite>\n`);
+  for (const s of chosen) {
+    const p = join(dir, `TEST-${s.name}.xml`);
+    writeFileSync(p, `<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="${s.display ?? s.name}" tests="${s.tests}" skipped="${s.skipped ?? 0}" failures="${s.failures ?? 0}" errors="0" timestamp="2026-09-23T00:00:00" hostname="h" time="0.1">\n</testsuite>\n`);
+    if (cfg.mtime_skew_ms) { const t = new Date(Date.now() + cfg.mtime_skew_ms); utimesSync(p, t, t); }
+  }
   console.log(`${chosen.reduce((n, s) => n + s.tests, 0)} tests completed`);
   process.exit(chosen.some(s => s.failures) ? 1 : 0);
 }

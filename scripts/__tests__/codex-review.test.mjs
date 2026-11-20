@@ -1,6 +1,7 @@
 // codex-review.test.mjs — scripts/codex-review.sh 통합 테스트.
 // 임시 git 저장소 + PATH 맨 앞에 가짜 `codex` 실행 파일을 두고, FAKE_CODEX_MODE 로 시나리오를 재현한다.
 // win32 이면 Git Bash 를 직접 호출한다(bash.exe 를 spawnSync 의 실행 파일로 — PATH lookup 이 필요 없다).
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, existsSync, readFileSync } from 'node:fs';

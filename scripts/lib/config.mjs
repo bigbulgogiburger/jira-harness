@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { assertValid } from './schema.mjs';
-import { repoRoots } from './git.mjs';
+import { repoRoots, quickRoots } from './git.mjs';
 
 export const CONFIG_REL = '.claude/harness.json';
 
@@ -10,6 +10,7 @@ export const DEFAULTS = Object.freeze({
   default_branch: 'main',
   default_branch_policy: 'deny',
   branch_template: 'feat/{keys}',
+  issue_worktree: 'flag',
   shell: 'auto',
   runtime_dir: '.claude/runtime',
   docs_only_paths: ['docs/**', '**/*.md'],
@@ -20,7 +21,7 @@ export const DEFAULTS = Object.freeze({
   wiki: { index: 'docs/INDEX.md', log: 'docs/LOG.md', schema: 'docs/INDEX-SCHEMA.md', dev_guide: 'docs/{KEY}-dev-guide.md', synthesis_dir: null, max_pages_per_closure: 3, claude_md_max_lines: 150 },
   jira: { start_transition: 'In Progress', done_transition: 'QA', comment_lang: 'ko' },
   subtasks: { match: null },
-  gate: { timeout_s: 1800, commit_budget_s: 180, push_level: 'full' },
+  gate: { timeout_s: 1800, commit_budget_s: 180, push_level: 'full', queue: true, queue_max_wait_s: 0 },
 });
 
 /**
@@ -30,6 +31,19 @@ export const DEFAULTS = Object.freeze({
 export function locateProject(cwd = process.cwd()) {
   const roots = repoRoots(cwd);
   if (!roots) return null;
+  return projectAt(roots);
+}
+
+/**
+ * locateProject 와 같은 답을 git 을 띄우지 않고 낸다(lib/git.mjs quickRoots) — 훅이 명령마다 치르는 비용을 줄이려는 것이다.
+ * 저장소 밖이면 null, 확실하지 않으면 undefined — 그때는 호출자가 locateProject 로 묻는다.
+ */
+export function locateProjectQuick(cwd = process.cwd()) {
+  const roots = quickRoots(cwd);
+  return roots ? projectAt(roots) : roots;
+}
+
+function projectAt(roots) {
   const inMain = existsSync(join(roots.mainRoot, CONFIG_REL));
   const inTop = existsSync(join(roots.toplevel, CONFIG_REL));
   if (!inMain && !inTop) return { ...roots, configPath: null, configRoot: null };
@@ -47,10 +61,38 @@ export function loadConfig(configPath) {
   for (const k of ['review', 'models', 'wiki', 'jira', 'subtasks', 'gate', 'herdr']) cfg[k] = { ...DEFAULTS[k], ...(raw[k] ?? {}) };
   cfg.herdr.kinds = { ...DEFAULTS.herdr.kinds, ...(raw.herdr?.kinds ?? {}) };
   for (const [name, s] of Object.entries(cfg.stacks)) {
-    cfg.stacks[name] = { compile: null, lint: null, build: null, test: null, extra: [], env_file: null, ...s };
-    if (!cfg.stacks[name].paths) cfg.stacks[name].paths = s.dir === '.' ? ['**'] : [`${s.dir.replace(/\/$/, '')}/**`];
+    // dir 은 한 가지 꼴로 맞춘다(`./frontend` · `frontend/` · `frontend\` → `frontend`) — 변경 경로(git 은 `frontend/…` 로 낸다)와 접두로 견주는 곳들이
+    // 철자가 다른 dir 을 만나면 그 스택의 파일을 하나도 못 찾는다(관련 테스트 선택 0 · lint 대상 0 이 「돌 것 없음」으로 지나간다)
+    const dir = normStackDir(s.dir);
+    cfg.stacks[name] = { compile: null, lint: null, build: null, test: null, extra: [], env_file: null, ...s, dir };
+    if (!cfg.stacks[name].paths) cfg.stacks[name].paths = dir === '.' ? ['**'] : [`${dir}/**`];
   }
   return cfg;
+}
+
+/** 스택 dir 을 루트 기준 `/` 구분 · 앞의 `./` 와 끝의 `/` 없는 꼴로. 루트는 `.` */
+export function normStackDir(dir) {
+  const d = String(dir).replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
+  return d === '' || d === '.' ? '.' : d;
+}
+
+/** 루트 기준 경로 중 그 스택 dir 아래 것을 스택 dir 기준 경로로 */
+export function underStack(paths, dir) {
+  const d = normStackDir(dir);
+  if (d === '.') return paths;
+  return paths.filter(p => p.startsWith(d + '/')).map(p => p.slice(d.length + 1));
+}
+
+/**
+ * 스택 dir 의 **조상 폴더에 바로 놓인** 파일의 이름(루트 기준 경로 목록에서). 스택이 루트면 없다.
+ * 린터는 조상 폴더의 설정(.eslintrc · eslint.config · tsconfig · package.json …)도 읽는다 — 스택 dir 밖이지만 그 스택의 lint 판정을 바꾼다.
+ */
+export function aboveStack(paths, dir) {
+  const d = normStackDir(dir);
+  if (d === '.') return [];
+  const parts = d.split('/');
+  const dirs = new Set(parts.map((_, i) => parts.slice(0, i).join('/'))); // '' (루트) · 'a' · 'a/b' …
+  return paths.filter(p => dirs.has(p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '')).map(p => p.slice(p.lastIndexOf('/') + 1));
 }
 
 /** 브랜치 이름 → { keys[], slug } — 패턴 밖이면 null */

@@ -2,9 +2,10 @@
 // Herdr 는 대역(fake-herdr)이다. 기본 배치(split)에서는 worktree 를 실행기가 git 으로 직접 파므로 진짜 worktree 가 생긴다 — 레인 에이전트가 고친 것처럼
 // 테스트가 그 worktree 에 파일을 바꿔 두고(그러려면 미리 판다 → mode existing) 사이드카를 써 둔다. workspace 배치는 대역의 worktree 명령으로 검사한다.
 // 판정축: kind 배정(plan 선언 > 풀 순서) · 전부 띄운 뒤 기다림 · 패치 회수(add→diff→reset) · 적용 yes/conflict/skipped/empty/no-apply · 상태 JSON lanes[] · 장부 · 커밋 0.
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -115,7 +116,7 @@ test('implement: herdr.lanes 가 verify 면 ok:false · Herdr 밖이면 outside 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.value.dry_run, true);
   assert.equal(r.value.placement, 'split');
-  assert.equal(r.value.worktree_dir, `.claude/runtime/herdr/worktrees/${SLUG}`);
+  assert.equal(fwd(r.value.worktree_dir).toLowerCase(), fwd(join(dir, '.claude/runtime/herdr/worktrees', SLUG)).toLowerCase(), '레인 작업트리 자리는 메인 저장소 runtime 아래의 절대 경로');
   assert.deepEqual(r.value.lanes.map(l => [l.lane, l.name, l.kind, l.kind_source, l.worktree_branch]), [
     ['be', 'impl-be', 'codex', 'pool', `lane/${SLUG}/be`],
     ['fe', 'impl-fe', 'grok', 'plan', `lane/${SLUG}/fe`],
@@ -140,6 +141,61 @@ test('implement: herdr.lanes 가 verify 면 ok:false · Herdr 밖이면 outside 
   assert.match(none.value.reason, /--lanes zz/);
   const ws = lanes(makeRepo({ lane_placement: 'workspace' }), ['implement', '--slug', SLUG, '--dry-run'], env);
   assert.equal(ws.value.placement, 'workspace');
+});
+
+test('implement 프롬프트의 검증 규칙: 레인의 DoD 테스트는 gate --try --lane 하나로 묶어 돌린다(전체 테스트·lint·build·위반 주입은 레인이 돌리지 않는다) · dod 가 없는 레인은 선택 실행 · dod_tests 없는 프로젝트는 러너 직접 · 시간 상한은 lane_timeout_s 가 작아도 3600 이상', () => {
+  // (a) dod_tests 가 없는 프로젝트 — 진입점 안내 없이 「자기 테스트만 한 번에」 규칙만. 시간 상한은 기본값(900)이 아니라 3600
+  const plain = makeRepo();
+  const a = lanes(plain, ['implement', '--slug', SLUG, '--dry-run'], inside(plain).env);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.value.timeout_s, 3600, '리뷰 레인 기준인 lane_timeout_s 기본값(900)을 구현 레인에 그대로 쓰지 않는다');
+  const pa = a.value.lanes[0].prompt;
+  assert.match(pa, /## 검증 — 자기 테스트만, 한 번에 묶어서/);
+  assert.match(pa, /자기가 쓰거나 고친 테스트만\*\* 그 스택의 러너로 한 번에 묶어 돌린다/);
+  assert.doesNotMatch(pa, /gate\.mjs" --try/, 'dod_tests 가 없으면 --try 로 돌릴 것이 없다');
+  assert.match(pa, /돌리지 않는 것: 전체 테스트 · 전체 lint · build · 위반 주입 프로브/);
+  assert.match(pa, /테스트 실행은 통틀어 3번 안팎에서 끝낸다/);
+  assert.doesNotMatch(pa, /실행하지 않았으면 tests\.command 를 빈 문자열로 두고 status 는 partial/, '돌릴 테스트가 없는 레인을 partial 로 몰지 않는다');
+  assert.equal(lanes(makeRepo({ lane_timeout_s: 7200 }), ['implement', '--slug', SLUG, '--dry-run'], inside(plain).env).value.timeout_s, 7200, '더 길게 준 설정은 그대로');
+  assert.equal(lanes(makeRepo({ lane_timeout_s: 600 }), ['implement', '--slug', SLUG, '--dry-run'], inside(plain).env).value.timeout_s, 3600, '짧게 준 설정은 하한까지 올린다');
+
+  // (b) dod_tests 가 있는 프로젝트 — 레인의 dod(id)가 있으면 --lane, 없으면 --stack/--select
+  const dir = makeRepo();
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  cfg.stacks.be.dod_tests = { adapter: 'gradle-junit', run: './gradlew test' };
+  cfg.stacks.fe.dod_tests = { adapter: 'vitest', run: 'npx vitest run' };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  const set = sh(NODE, [join(SCRIPTS, 'issue-set.mjs'), '--cwd', dir,
+    '--dod', JSON.stringify({ id: 'D1', text: '[ABC-5] 수수료 계산', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 } }),
+    '--dod', JSON.stringify({ id: 'D2', text: '[ABC-5] 위반 주입', probe: 'echo INJECTION_FIRED', expect: { pattern: 'INJECTION_FIRED' } }),
+    '--lane', JSON.stringify({ name: 'be', model: 'opus', files: ['backend/**'], worktree: true, brief: '서버 쪽을 고친다', dod: ['D1', 'D2'] })], dir, OUTSIDE);
+  assert.equal(set.status, 0, set.stderr);
+  const b = lanes(dir, ['implement', '--slug', SLUG, '--dry-run'], inside(dir).env);
+  assert.equal(b.status, 0, b.stderr);
+  const [be, fe] = b.value.lanes.map(l => l.prompt);
+  assert.match(be, /## 이 레인이 닫아야 할 DoD\n- D1 \[ABC-5\] 수수료 계산 \(be: \*FeeTest\*\)\n- D2 \[ABC-5\] 위반 주입/, 'DoD id 를 상태의 문구·선택으로 풀어 보여준다');
+  assert.match(be, /node ".*\/scripts\/gate\.mjs" --try --slug feat-ABC-5 --lane be --cwd "<worktree>"/);
+  assert.match(be, /「다시」 줄에 나온 명령으로 \*\*실패한 것만\*\* 다시 돌린다/);
+  assert.match(be, /gate\.mjs" --try --stack <스택> --select '<패턴>'/);
+  assert.match(be, /스택과 패턴: be = 테스트 클래스 패턴\(예 '\*FeeTest\*'\) · fe = 테스트 파일 경로\(그 스택 폴더 기준\)/);
+  assert.doesNotMatch(fe, /--try --slug/, 'dod 가 없는 레인에는 --lane 을 권하지 않는다(돌리면 exit 2 다)');
+  assert.match(fe, /자기가 쓰거나 고친 테스트만\*\* 아래 명령으로 한 번에 묶어 돌린다/);
+  assert.match(fe, /gate\.mjs" --try --stack <스택> --select '<패턴>'/);
+  for (const p of [be, fe]) assert.doesNotMatch(p, /의 테스트를 돌리지 못한다/, '모든 스택이 묶어 돌 수 있으면 그 안내는 없다');
+
+  // (c) dod_tests 가 한 스택에만 있는 프로젝트 — --try 가 묶어 돌리지 못하는 스택을 이름으로 알린다(그 스택을 --stack 으로 지목하면 exit 2 다)
+  delete cfg.stacks.fe.dod_tests;
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  const c = lanes(dir, ['implement', '--slug', SLUG, '--dry-run'], inside(dir).env);
+  assert.equal(c.status, 0, c.stderr);
+  assert.equal(c.value.lanes.length, 2);
+  for (const p of c.value.lanes.map(l => l.prompt)) {
+    assert.match(p, /위 명령은 스택 fe 의 테스트를 돌리지 못한다\(그 스택에는 묶어 돌리는 설정이 없다 — `--stack fe` 은 실패한다\)/);
+    assert.match(p, /그 스택의 러너를 직접 불러 \*\*자기 테스트만 한 번에 묶어\*\* 돌린다/);
+    assert.match(p, /스택과 패턴: be = 테스트 클래스 패턴/);
+    assert.doesNotMatch(p, /fe = 테스트 파일 경로/, '묶어 돌 수 없는 스택을 「스택과 패턴」에 올리지 않는다');
+  }
 });
 
 test('implement(split): 레인 2개를 git worktree + driver 옆 pane 으로 띄워(전부 start 뒤 wait) 패치를 회수·적용하고 상태 JSON lanes[] 와 장부에 kind·결과를 남긴다 · 새 워크스페이스 없음 · 커밋은 0', () => {
@@ -205,7 +261,8 @@ test('implement(split): 레인 2개를 git worktree + driver 옆 pane 으로 띄
   assert.deepEqual(starts.map(a => a[2]), ['impl-be', 'impl-fe']);
   assert.deepEqual(starts.map(a => a[4]), ['codex', 'grok']);
   assert.ok(c.some(a => a[0] === 'notification' && /적용 2/.test(a[2])), `완료 토스트: ${JSON.stringify(c.filter(a => a[0] === 'notification'))}`);
-  assert.match(r.value.next, /git worktree remove/);
+  assert.match(r.value.next, /issue-start\.mjs --remove-worktree <KEY>/, '작업트리는 안전 제거로 안내한다');
+  assert.doesNotMatch(r.value.next, /git worktree remove/);
 });
 
 test('implement(split): 체크아웃이 없으면 실행기가 git worktree add 로 판다(created · 브랜치 생성) · 장부 applied 면 remove --force 뒤 새로 판다(fresh · 지난 변경 소멸) · 낡은 브랜치는 지우고 · HEAD 밖 커밋이 있으면 보존하고 failed', () => {
@@ -253,12 +310,13 @@ test('implement(split): 체크아웃이 없으면 실행기가 git worktree add 
 });
 
 test('implement: 사이드카 failed/결과 없음이면 패치는 뽑되 적용하지 않는다(skipped/empty) · --no-apply · 메인이 같은 파일을 고쳐 두면 conflict(메인 수정을 덮지 않는다)', () => {
-  // (a) sidecar failed(be) + 결과 파일 없음(fe)
+  // (a) sidecar failed(be) + 결과 없이 오류 파일만(fe) — 결과도 오류도 없는 레인은 lane_timeout_s 까지 기다린다(그 경로는 herdr-lanes.test 의 run 이 짧은 상한으로 본다)
   const d1 = makeRepo();
   const a = inside(d1, { FAKE_HERDR_STATES: 'working,working,done,done' });
   const be1 = plantSplit(d1, 'be'); plantSplit(d1, 'fe');
   writeFileSync(join(be1, 'backend/App.java'), 'class App { int x; }\n');
   sidecar(d1, 'be', { name: 'be', status: 'failed', files: [], tests: { command: '', passed: 0, failed: 0 }, notes: '테스트를 못 돌렸다' });
+  writeFileSync(join(d1, '.claude/runtime/issues', `${SLUG}.lane-fe.json.error.txt.agent`), '담당 파일을 찾지 못했다');
   const r1 = lanes(d1, ['implement', '--slug', SLUG], a.env);
   assert.equal(r1.status, 0, r1.stderr);
   assert.equal(r1.value.ok, false);
@@ -266,7 +324,7 @@ test('implement: 사이드카 failed/결과 없음이면 패치는 뽑되 적용
   assert.equal(be.status, 'done'); assert.equal(be.sidecar.status, 'failed'); assert.equal(be.applied, 'skipped');
   assert.equal(be.patch.files.length, 1, '패치는 뽑아 둔다(적용만 안 한다)');
   const fe = r1.value.lanes.find(l => l.lane === 'fe');
-  assert.equal(fe.status, 'failed'); assert.match(fe.reason, /결과 파일 없음/); assert.equal(fe.applied, 'empty'); assert.equal(fe.sidecar, null);
+  assert.equal(fe.status, 'failed'); assert.match(fe.reason, /레인 보고 오류: 담당 파일을 찾지 못했다/); assert.equal(fe.applied, 'empty'); assert.equal(fe.sidecar, null);
   assert.equal(txt(join(d1, 'backend/App.java')), 'class App {}\n', '메인은 그대로');
   assert.deepEqual(r1.value.failed.map(s => s.split(':')[0]), ['impl-fe']);
   assert.equal(state(d1).lanes.find(l => l.name === 'fe').result.status, 'failed');
@@ -343,4 +401,77 @@ test('implement(workspace 배치): herdr worktree create 로 워크스페이스�
   const c6 = calls(e.log);
   assert.ok(c6.some(x => x[0] === 'worktree' && x[1] === 'open'));
   assert.ok(!c6.some(x => x[0] === 'worktree' && x[1] === 'create'));
+});
+
+test('implement(작업트리 세션): 이슈를 별도 작업트리에서 돌려도 상태·결과·장부·패치·레인 작업트리는 메인 저장소 runtime 에 놓이고, 패치는 지금 일하는 작업트리에 들어간다(메인 체크아웃은 그대로)', () => {
+  const dir = makeRepo();
+  g(dir, 'checkout', '-q', 'main');
+  const wt = join(mkdtempSync(join(tmpdir(), 'cw-impl-iss-')), 'ABC-5');
+  g(dir, 'worktree', 'add', '-q', wt, 'feat/ABC-5');
+  const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
+  sidecar(dir, 'be', ok('be', ['backend/Fee.java']));
+  // (1) 실행기가 레인 작업트리를 판다 — 메인 runtime 아래, 이슈 작업트리의 HEAD 에서
+  const r1 = lanes(wt, ['implement', '--slug', SLUG, '--lanes', 'be'], env);
+  assert.equal(r1.status, 0, r1.stderr);
+  const l1 = r1.value.lanes[0];
+  assert.equal(l1.status, 'done', JSON.stringify(l1).slice(0, 600));
+  assert.equal(l1.worktree.mode, 'created');
+  assert.equal(fwd(l1.worktree.path).toLowerCase(), fwd(splitPath(dir, 'be')).toLowerCase(), '레인 작업트리는 메인 저장소 runtime 아래');
+  assert.equal(fwd(l1.out).toLowerCase(), fwd(join(dir, '.claude/runtime/issues', `${SLUG}.lane-be.json`)).toLowerCase(), '결과 파일도 메인 runtime');
+  assert.ok(!existsSync(join(wt, '.claude/runtime')), '이슈 작업트리에는 runtime 이 생기지 않는다');
+  assert.ok(existsSync(join(dir, '.claude/runtime/herdr', `implement-${SLUG}.json`)), '장부는 메인 runtime');
+  const split = calls(log).find(a => a[0] === 'pane' && a[1] === 'split');
+  assert.equal(fwd(split[split.indexOf('--cwd') + 1]).toLowerCase(), fwd(splitPath(dir, 'be')).toLowerCase(), '레인 pane 의 cwd 는 그 레인 작업트리');
+  // (2) 레인이 고친 것을 다시 돌려 회수 — 패치는 이슈 작업트리에 들어가고 메인 체크아웃(main 브랜치)은 그대로
+  //     (1)의 장부가 empty 라 다음 실행은 작업트리를 새로 판다 → 레인이 고친 상태를 만들려면 장부를 지우고 기존 작업트리를 쓴다
+  rmSync(join(dir, '.claude/runtime/herdr', `implement-${SLUG}.json`));
+  writeFileSync(join(l1.worktree.path, 'backend/Fee.java'), 'class Fee {}\n');
+  const second = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
+  const r2 = lanes(wt, ['implement', '--slug', SLUG, '--lanes', 'be'], second.env);
+  const l2 = r2.value.lanes[0];
+  assert.equal(l2.applied, 'yes', JSON.stringify(l2).slice(0, 600));
+  assert.equal(txt(join(wt, 'backend/Fee.java')), 'class Fee {}\n', '패치는 일하는 작업트리에');
+  assert.ok(!existsSync(join(dir, 'backend/Fee.java')), '메인 체크아웃은 건드리지 않는다');
+  assert.match(fwd(l2.patch.file).toLowerCase(), new RegExp(`${fwd(dir).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.claude/runtime/herdr/patches/`), '패치 파일도 메인 runtime');
+  assert.equal(state(dir).lanes.find(l => l.name === 'be').result.applied, 'yes', '상태 JSON 은 메인 runtime 의 그 이슈 것');
+  assert.ok(!existsSync(join(wt, '.claude/runtime')));
+});
+
+test('implement --harvest: 레인을 띄우지 않고 이미 온 결과만 회수한다(Herdr 밖에서도) — 결과가 없는 레인의 작업트리는 건드리지 않고 · 이미 들어간 레인은 다시 넣지 않는다', () => {
+  const dir = makeRepo();
+  const be = plantSplit(dir, 'be'); const fe = plantSplit(dir, 'fe');
+  writeFileSync(join(be, 'backend/Fee.java'), 'class Fee {}\n');
+  writeFileSync(join(fe, 'frontend/app.js'), 'export default 3;\n');
+  g(fe, 'add', '-A'); // 레인이 인덱스에 올려 둔 상태 — 회수가 손대면 풀린다
+  const outOf = lane => join(dir, '.claude/runtime/issues', `${SLUG}.lane-${lane}.json`);
+  mkdirSync(dirname(outOf('be')), { recursive: true });
+  writeFileSync(outOf('be'), JSON.stringify(ok('be', ['backend/Fee.java']))); // 실행기가 닫은 뒤에 온 결과
+  const log = join(dir, 'h.harvest.log');
+  const env = { ...OUTSIDE, FAKE_HERDR_LOG: log };
+  // (1) be 는 결과가 있다 → 회수·적용. fe 는 아직 없다 → 보고만(작업트리·장부·상태에 손대지 않는다)
+  const r1 = lanes(dir, ['implement', '--slug', SLUG, '--harvest'], env);
+  assert.equal(r1.status, 0, r1.stderr);
+  assert.equal(r1.value.ok, true, JSON.stringify(r1.value).slice(0, 800));
+  const be1 = r1.value.lanes.find(l => l.lane === 'be'); const fe1 = r1.value.lanes.find(l => l.lane === 'fe');
+  assert.equal(be1.applied, 'yes'); assert.equal(be1.worktree.mode, 'harvest'); assert.equal(be1.sidecar.status, 'done');
+  assert.equal(txt(join(dir, 'backend/Fee.java')), 'class Fee {}\n');
+  assert.equal(fe1.status, 'failed'); assert.match(fe1.reason, /결과 파일 없음.*끝난 뒤 다시 회수/); assert.equal(fe1.patch, null); assert.equal(fe1.applied, 'skipped');
+  assert.equal(g(fe, 'diff', '--cached', '--name-only'), 'frontend/app.js', '결과 없는 레인의 인덱스는 그대로');
+  assert.equal(txt(join(dir, 'frontend/app.js')), 'export default 1;\n');
+  const ledger1 = JSON.parse(readFileSync(join(dir, '.claude/runtime/herdr', `implement-${SLUG}.json`), 'utf8'));
+  assert.equal(ledger1.lanes.be.applied, 'yes'); assert.equal(ledger1.lanes.fe, undefined);
+  assert.equal(state(dir).lanes.find(l => l.name === 'be').result.applied, 'yes');
+  assert.equal(state(dir).lanes.find(l => l.name === 'fe').result, undefined, '아직 도는 레인의 상태 기록을 덮지 않는다');
+  assert.equal(calls(log).length, 0, 'Herdr 를 부르지 않는다');
+  // (2) fe 결과가 왔다 → fe 만 회수 · be 는 다시 넣지 않는다
+  writeFileSync(outOf('fe'), JSON.stringify(ok('fe', ['frontend/app.js'])));
+  const r2 = lanes(dir, ['implement', '--slug', SLUG, '--harvest'], env);
+  assert.deepEqual(r2.value.lanes.map(l => [l.lane, l.applied]), [['fe', 'yes']]);
+  assert.deepEqual(r2.value.skipped, ['be(이미 적용)']);
+  assert.equal(txt(join(dir, 'frontend/app.js')), 'export default 3;\n');
+  // (3) 전부 들어갔다 → 회수할 것이 없다
+  const r3 = lanes(dir, ['implement', '--slug', SLUG, '--harvest'], env);
+  assert.equal(r3.value.ok, false);
+  assert.match(r3.value.reason, /회수할 레인이 없다/);
+  assert.equal(g(dir, 'rev-list', '--count', 'HEAD'), '1', '커밋은 아무도 하지 않는다');
 });

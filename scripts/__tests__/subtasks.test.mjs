@@ -221,8 +221,10 @@ test('plan.js: 하위 구성이 Design·scope 프롬프트에 붙고, Herdr 꺼�
   }
   assert.ok(!none.prompt('design').includes('하위이슈 구성'), '하위가 없으면 프롬프트가 안 바뀐다');
   assert.ok(!none.prompt('verify:scope').includes('[KEY]'));
-  assert.ok(a.prompt('design').includes('모든 레인의 worktree 는 false') && !a.prompt('design').includes('하위이슈마다 레인 하나'), '전략 A: worktree 금지');
-  assert.ok(b.prompt('design').includes('하위이슈마다 레인 하나') && !b.prompt('design').includes('모든 레인의 worktree 는 false'), '전략 B: 하위마다 레인');
+  // 어느 쪽이든 하위이슈마다 레인 하나다 — 갈리는 것은 레인이 도는 자리(A: 한 작업트리 · B: 레인마다 작업트리)
+  for (const s of [a, b]) assert.ok(s.prompt('design').includes('**이슈마다 레인 하나**') && s.prompt('design').includes('하위이슈마다 하나다'), '하위마다 레인');
+  assert.ok(a.prompt('design').includes('**모든 레인의 worktree 는 false**') && !a.prompt('design').includes('Herdr 구현 레인이 켜져 있다'), '전략 A: 한 작업트리 — worktree 금지');
+  assert.ok(!b.prompt('design').includes('모든 레인의 worktree 는 false') && b.prompt('design').includes('Herdr 구현 레인이 켜져 있다'), '전략 B: 레인마다 작업트리');
   // 문자열 키만 와도 받고, 하위가 빈 묶음은 무시한다
   const s = simPlan({ ...common, subtasks: [{ parent: 'ABC-10', children: ['ABC-11'] }, { parent: 'ABC-99', children: [] }] });
   assert.ok(s.prompt('design').includes('ABC-10 의 하위: ABC-11') && !s.prompt('design').includes('ABC-99'));

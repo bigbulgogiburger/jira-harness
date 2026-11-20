@@ -1,0 +1,8 @@
+{
+  "plan-check": {
+    "verdict": "PASS",
+    "blockers": [],
+    "notes": ["원문 3문장을 요구 R1~R3 과 대조했다."],
+    "looked": ["backend/src/FeeService.java", "docs/ABC-123-dev-guide.md.draft", "원문: 잘못된 입력은 거부돼야 한다"]
+  }
+}

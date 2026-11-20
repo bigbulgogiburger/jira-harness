@@ -1,4 +1,4 @@
-// A2 워크플로 테스트 — workflows/plan.js · workflows/recon.js 의 **제어 흐름**을 wf-sim 으로 실행해 검사한다.
+// A2 워크플로 테스트 — workflows/plan.js 의 **제어 흐름**을 wf-sim 으로 실행해 검사한다.
 // 모델을 부르지 않으므로 검증 대상은 레인 수·순서·model 명시·schema 유무·반환 모양·거부 경로다(품질 판정이 아니다).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,8 +17,8 @@ const NODE = process.execPath;
 // wf-sim 은 meta 를 리터럴이 평가되는 자리에서 잡는다(top-level return 뒤가 아니라) — 경고는 전부 실패로 본다.
 const realWarnings = (out) => out.warnings;
 
-function sim(file, args, responses) {
-  const argv = [SIM, file, '--args', JSON.stringify(args), '--json'];
+function sim(file, args, responses, extra = []) {
+  const argv = [SIM, file, '--args', JSON.stringify(args), '--json', ...extra];
   if (responses) argv.push('--responses', responses);
   const r = spawnSync(NODE, argv, { encoding: 'utf8', windowsHide: true });
   assert.ok(r.stdout.trim(), `wf-sim 이 출력을 내지 않았다: ${r.stderr}`);
@@ -111,6 +111,45 @@ test('plan (e) herdrKinds 가 오면 Design 프롬프트에 kind 선택 지시·
   assert.equal(empty.calls.find((c) => c.label === 'design').promptChars, d0);
 });
 
+test('plan (f) 구현 레인의 단위 — 이슈 1건은 「레인 1개」(직접 구현), 이슈 여러 건(다중 키 · 하위이슈)은 「이슈마다 레인 하나」 · Herdr 구현 레인이 꺼져 있으면 한 작업트리(worktree 전부 false)', () => {
+  const design = (args) => sim(WF('plan.js'), args, RESP('plan-design-ok.json'), ['--prompts']).calls.find((c) => c.label === 'design').prompt;
+  const subtasks = [{ parent: 'ABC-123', children: [{ key: 'ABC-124', summary: '서버' }, { key: 'ABC-125', summary: '화면' }] }];
+  const multiKey = { keys: ['ABC-123', 'ABC-200'], issueBodies: { 'ABC-123': '요금 표시', 'ABC-200': '알림 문구' } };
+  const PER_ISSUE = /\*\*이슈마다 레인 하나\*\*를 두고 동시에 구현한다/;
+  const ONE_TREE = /\*\*모든 레인의 worktree 는 false\*\*/;
+
+  // 이슈 1건 · Herdr 꺼짐 — 드라이버가 직접 구현한다. 나누는 길은 사용자의 명시뿐이다
+  const off = design(PLAN_ARGS);
+  assert.match(off, /\*\*레인은 1개로 둔다\*\* — 이슈 1건은 드라이버 세션 하나가 한 작업트리에서 직접 구현한다/);
+  assert.match(off, /사용자가 이 이슈의 병렬 구현을 명시했을 때만 2개 이상/);
+  assert.ok(!PER_ISSUE.test(off) && !off.includes('Herdr 구현 레인이 켜져 있다'));
+
+  // 이슈 여러 건 · Herdr 꺼짐 — 이슈마다 레인 하나, 한 작업트리에서 동시에(파일 소유가 겹치면 합친다)
+  for (const args of [planArgs(multiKey), planArgs({ subtasks })]) {
+    const p = design(args);
+    assert.match(p, PER_ISSUE);
+    assert.match(p, ONE_TREE);
+    assert.match(p, /레인 객체에 `key`/);
+    assert.match(p, /Phase 0 — 메인이 먼저 구현하고 커밋/);
+    assert.match(p, /레인이 4개를 넘으면/, '레인 수가 불어나지 않게 묶는 기준이 있다');
+    assert.match(p, /레인이 2개 이상이면 레인마다 `dod` 를 쓴다 — 그 레인이 통과시켜야 하는 DoD 의 id 배열/, '레인이 구현 중 돌릴 「자기 테스트」의 근거');
+    assert.ok(!p.includes('레인은 1개로 둔다'), '이슈 여러 건을 차례로 하라고 지시하지 않는다');
+  }
+  assert.match(design(planArgs(multiKey)), /ABC-123, ABC-200/, '어느 키들인지 프롬프트에 실린다');
+
+  // Herdr 켜짐 — 이슈 1건의 지시는 그대로이고, 이슈 여러 건이면 이슈마다 레인(각자 worktree 라 「전부 false」 지시는 없다)
+  const on = design(planArgs({ herdrKinds: ['codex', 'claude'] }));
+  assert.ok(!on.includes('레인은 1개로 둔다') && !PER_ISSUE.test(on));
+  assert.match(on, /나눌 근거가 없으면 레인 1개로 둔다/);
+  assert.match(on, /\*\*Herdr 구현 레인이 켜져 있다\*\*/);
+  for (const args of [planArgs({ herdrKinds: ['codex'], subtasks }), planArgs({ herdrKinds: ['codex'], ...multiKey })]) {
+    const p = design(args);
+    assert.match(p, PER_ISSUE);
+    assert.ok(!ONE_TREE.test(p));
+    assert.match(p, /\*\*Herdr 구현 레인이 켜져 있다\*\*/);
+  }
+});
+
 test('plan meta 는 선언 phase 와 실제 phase() 가 일치한다', () => {
   const meta = readMeta(WF('plan.js'));
   assert.equal(meta.name, 'jira-harness-plan');
@@ -179,62 +218,5 @@ test('plan (d) 필수 args 누락은 각각 명확한 메시지로 throw 한다'
     assert.match(out.error, re);
     assert.equal(out.exit, 1);
     assert.equal(out.calls.length, 0, '인자 검증 전에 에이전트를 띄우면 안 된다');
-  }
-});
-
-const RECON_ARGS = {
-  keys: ['ABC-123', 'ABC-124', 'ABC-125'],
-  issueBodies: { 'ABC-123': '본문 1', 'ABC-124': '본문 2', 'ABC-125': '본문 3' },
-  hints: ['요금 도메인'],
-  repoRoot: '/tmp/project',
-};
-
-test('recon (a) 정상 args — 1레인 sonnet·phase Recon·반환 3필드', () => {
-  const out = sim(WF('recon.js'), RECON_ARGS);
-  assert.equal(out.error, null, out.error ?? '');
-  assert.equal(out.exit, 0);
-  assert.deepEqual(realWarnings(out), []);
-  assert.equal(out.calls.length, 1);
-  assert.equal(out.calls[0].label, 'recon');
-  assert.equal(out.calls[0].model, 'sonnet');
-  assert.ok(out.calls[0].hasSchema);
-  assert.ok(out.calls[0].promptChars > 200);
-  assert.deepEqual(out.phases, ['Recon']);
-  assert.deepEqual(Object.keys(out.result).sort(), ['branchPoints', 'scope', 'unknowns']);
-  assert.ok(Array.isArray(out.result.branchPoints));
-  assert.ok(Array.isArray(out.result.unknowns));
-
-  const meta = readMeta(WF('recon.js'));
-  assert.equal(meta.name, 'jira-harness-recon');
-  assert.deepEqual(meta.phases.map((p) => p.title), ['Recon']);
-});
-
-test('recon model 은 args 로 덮을 수 있다', () => {
-  const out = sim(WF('recon.js'), { ...RECON_ARGS, model: 'haiku' });
-  assert.equal(out.calls[0].model, 'haiku');
-});
-
-test('recon 위반 주입 — 레인이 죽으면 빈 초록이 아니라 미확인으로 되돌린다', () => {
-  const out = sim(WF('recon.js'), RECON_ARGS, RESP('recon-dead.json'));
-  assert.equal(out.error, null, out.error ?? '');
-  assert.deepEqual(out.result.branchPoints, []);
-  assert.equal(out.result.unknowns.length, 1);
-  assert.match(out.result.unknowns[0], /반환하지 않았다/);
-});
-
-test('recon (d) 필수 args 누락은 명확한 메시지로 throw 한다', () => {
-  const cases = [
-    [{ keys: undefined }, /args\.keys/],
-    [{ issueBodies: undefined }, /args\.issueBodies/],
-    [{ repoRoot: undefined }, /args\.repoRoot/],
-  ];
-  for (const [patch, re] of cases) {
-    const a = { ...RECON_ARGS };
-    for (const k of Object.keys(patch)) delete a[k];
-    const out = sim(WF('recon.js'), a);
-    assert.ok(out.error, `${JSON.stringify(Object.keys(patch))} 로 throw 하지 않았다`);
-    assert.match(out.error, /recon\.js:/);
-    assert.match(out.error, re);
-    assert.equal(out.calls.length, 0);
   }
 });

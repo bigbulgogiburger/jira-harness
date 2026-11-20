@@ -6,9 +6,11 @@
 // ⚠ 셸 툴은 둘이다(Bash · PowerShell). 한쪽만 보면 다른 쪽으로 커밋할 때 게이트가 아예 돌지 않는다.
 //   hooks/hooks.json 의 matcher 와 gate-core 의 SHELL_TOOLS 는 항상 같은 집합이어야 한다 — gate.test 가 대조하고,
 //   setup inject 의 powershell 케이스가 이 스크립트가 PowerShell 이벤트도 판정하는지 실측한다.
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { existsSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { decide, detectGitOps, effectiveCwd, SHELL_TOOLS } from './lib/gate-core.mjs';
+import { locateProject, locateProjectQuick, loadConfig } from './lib/config.mjs';
+import { currentBranch, quickBranch } from './lib/git.mjs';
 import { herdrPing } from './lib/herdr.mjs';
 
 let raw = '';
@@ -27,6 +29,7 @@ const cwd = effectiveCwd(command, baseCwd);
 
 const RANK = { deny: 0, warn: 1, pass: 2 };
 let op, verdict;
+const verdicts = [];
 for (const job of jobs) {
   let v;
   // 판정할 디렉토리가 없으면(cd 경로 오타·MSYS 경로 오인) fail-open 이 아니라 fail-closed — 없는 경로는 NO_HARNESS 로 통과해 버린다
@@ -36,11 +39,13 @@ for (const job of jobs) {
   } catch (e) {
     v = { decision: 'deny', code: 'HOOK_ERROR', reason: `판정 중 오류(fail-closed): ${e.message}` };
   }
+  verdicts.push({ op: job.op, code: v.code, decision: v.decision });
   // 가장 무거운 판정(deny > warn > pass)이 대표다 — 같으면 앞선 op
   if (!verdict || RANK[v.decision] < RANK[verdict.decision]) { op = job.op; verdict = v; }
 }
 
 const tag = `[jira-harness] git ${op}: ${verdict.code} — ${verdict.reason}`;
+logVerdict();
 if (verdict.decision === 'deny') {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: tag } }));
   // Herdr 토스트(Herdr 밖이면 무동작) — 무인 pane 에서 훅이 막았을 때 사람이 사이드바에서 알아채게. 판정은 이미 끝났으니 실패해도 무관.
@@ -51,3 +56,22 @@ if (verdict.decision === 'deny') {
   process.stderr.write(tag + '\n');
 }
 process.exit(0);
+
+// 판정 기록 — <runtime>/hook-log.jsonl 에 한 줄. 「훅이 무엇을 몇 번 막았나」를 세션 기록을 긁지 않고 세기 위한 것이다.
+// 판정이 끝난 뒤에 쓰고 어떤 오류도 삼킨다 — 기록 실패가 판정을 바꾸면 안 된다. 명령 전문은 남기지 않는다(메시지·경로가 섞인다).
+// 기록하려고 git 을 더 띄우지 않는다(판정마다 세 번 띄우면 commit·push 훅이 0.3~0.4초 늘어난다 — 실측): 저장소 뿌리와 브랜치를 파일로 읽고,
+// 그렇게 정할 수 없는 저장소(서브모듈 등)에서만 git 에게 묻는다.
+function logVerdict() {
+  try {
+    const dir = existsSync(cwd) ? cwd : baseCwd;
+    let proj = locateProjectQuick(dir);
+    const quick = proj !== undefined;
+    if (!quick) proj = locateProject(dir);
+    if (!proj?.configPath) return;
+    const cfg = loadConfig(proj.configPath);
+    const out = join(proj.configRoot, cfg.runtime_dir);
+    mkdirSync(out, { recursive: true });
+    const branch = quick ? quickBranch(proj.gitDir) : currentBranch(proj.toplevel);
+    appendFileSync(join(out, 'hook-log.jsonl'), JSON.stringify({ at: new Date().toISOString(), op, code: verdict.code, decision: verdict.decision, branch, tool: event.tool_name ?? null, all: verdicts.length > 1 ? verdicts : undefined }) + '\n', 'utf8');
+  } catch { /* 기록은 판정이 아니다 */ }
+}

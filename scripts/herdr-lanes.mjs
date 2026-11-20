@@ -26,8 +26,9 @@
 //   4. ★제출 확인 — `agent prompt` 의 성공 응답은 제출을 증명하지 않는다(codex·grok 실측). `agent get` 이 working/blocked 로 바뀌었는지 보고,
 //      아니면 화면에 남은 프롬프트를 `send-keys enter` 로 밀어 넣는다(1회)
 //   5. `agent wait` 로 settled 대기. blocked 면 화면을 읽어 **"Teach auto mode" 다이얼로그일 때만** `esc`(그 외 승인·권한 UI 는 사람 몫).
-//      ★settled 인데 이번 결과가 없으면 곧바로 실패로 읽지 않는다 — 제출 직후 남아 있던 idle 에 wait 가 풀리기도 한다. settle_grace_s(기본 30 · harness.json herdr.settle_grace_s) 동안
-//      지켜보고 일을 시작했으면 다시 기다린다(전체 상한은 timeout_s)
+//      ★settled(idle·done)는 끝이 아니다 — 끝의 신호는 결과 파일 하나다. 제출 직후 남아 있던 idle 에 wait 가 풀리기도 하고, 긴 명령을 돌려 두고 쉬는 레인도 유휴로 보인다.
+//      결과 없이 settled 면 settle_grace_s(기본 30 · harness.json herdr.settle_grace_s) 동안 지켜보고, 그래도 유휴면 한 번 알린 뒤(끝났으면 결과를 쓰라) 상한(timeout_s)까지 결과 파일을 기다린다.
+//      상한 전에 닫는 것은 에이전트가 사라졌을 때 · blocked · 사용량 한도 화면뿐이다
 //   6. ★결과는 화면이 아니라 파일 — 레인이 `<out>` 에 쓴 JSON 을 읽는다(alt-screen 스크롤백은 회수되지 않는다). **제출 뒤에 생긴 파일만** 결과다. 없으면 failed
 //   7. `close_panes` 면 pane 을 닫는다(기본 false — 사람이 화면을 본다). 재사용한 pane 은 닫지 않는다
 //   spec 의 레인들은 **전부 띄운 뒤 기다린다**(spec.parallel 기본 true) — 레인이 셋이면 벽시계는 셋의 최대값이다.
@@ -37,22 +38,25 @@
 //       → 마지막 줄 CODEX_RESULT={"status":"ok|limit|fail|missing",…} (codex-review.sh 와 같은 계약 — 라우터는 구분하지 않는다)
 //   node herdr-lanes.mjs verify|plan --diff-ref <ref> --files a,b --slug s [--kinds codex,grok] [--axes "…"] [--cwd] [--json]
 //       → harness.json.herdr.kinds.verify 레인들을 돌려 findings 를 verify.js 모양으로 합친다
-//   node herdr-lanes.mjs implement [--slug s] [--lanes a,b] [--contracts-file <md>] [--fresh] [--no-apply] [--dry-run] [--cwd] [--json]
+//   node herdr-lanes.mjs implement [--slug s] [--lanes a,b] [--contracts-file <md>] [--fresh] [--no-apply] [--dry-run] [--harvest] [--cwd] [--json]
 //       → 상태 JSON lanes[] 를 worktree 레인으로 돌리고 패치를 회수·적용한다. 레인 기록은 issue-set.mjs --lane 으로 상태 JSON 에 남긴다
+//         --harvest: 레인을 띄우지 않고 이미 있는 결과 파일·레인 작업트리만 회수·적용한다(실행기가 먼저 죽었거나 시간 초과 뒤에 결과가 온 경우 · Herdr 밖에서도 된다)
+//   상태·결과·장부·패치(runtime)는 작업트리 세션에서 불러도 메인 저장소의 runtime 에 둔다. 레인의 시작점·패치를 적용할 곳은 지금 일하는 트리다.
 //   node herdr-lanes.mjs gate --full|--related|--dod|--main|--commit [--stage-all] [--no-wait] [--cwd] [--json]
 //       → runner pane 에서 gate.mjs 를 돌린다. 기록·토스트는 gate.mjs 가 한다
 //   node herdr-lanes.mjs run --spec <spec.json> [--cwd] [--json]
 //       spec = { lanes: [{ name, kind, prompt | prompt_file, out, cwd?, worktree_branch?, placement?: split|workspace, worktree_dir?, args?[], reuse?, fresh? }], timeout_s?, settle_grace_s?, close_panes?, parallel?, auto_trust? }
 // 종료 코드: 0 (레인 실패는 결과 JSON 의 status 로 본다 — 리뷰 레인이 죽었다고 라우터를 죽이지 않는다) · 2 사용법/설정
 // Herdr 밖(HERDR_PANE_ID 없음)이면 status:"failed" reason:"outside herdr" — 라우터는 그때 exec/Workflow 경로로 돌아간다.
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, renameSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, renameSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { locateProject, loadConfig, branchSlug, statePath, readState } from './lib/config.mjs';
 import { currentBranch, git } from './lib/git.mjs';
 import { herdr, herdrEnv, herdrConfig, herdrPing } from './lib/herdr.mjs';
-import { resolveShell } from './lib/shell.mjs';
+import { laneName, herdrImplementOn, laneBranch, laneLedgerFile, lanePatchFile, laneWorktreeRoot } from './lib/lanes.mjs';
+import { listWorktrees, prepareWorktree, removeWorktree, removeDirSafely, harvestWorktree } from './lib/worktree.mjs';
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -67,8 +71,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function readJson(p) { try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null; } catch { return null; } }
 function writeJson(p, v) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, JSON.stringify(v, null, 2) + '\n', 'utf8'); }
 function sameDir(a, b) { return a && b && fwd(resolve(a)).toLowerCase() === fwd(resolve(b)).toLowerCase(); }
-/** Herdr 에이전트 이름 규칙 [a-z][a-z0-9_-]{0,31} 로 깎는다 */
-export function laneName(s) { const n = String(s).toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^[^a-z]+/, ''); return (n || 'lane').slice(0, 32); }
+export { laneName }; // 규칙은 lib/lanes.mjs — 계획 점검이 같은 규칙으로 이름 겹침을 본다
 
 /** kind 별 기본 네이티브 인자 — 실측 함정을 기본값으로 박는다. harness.json.herdr.kind_args 가 덮어쓴다 */
 export const DEFAULT_KIND_ARGS = {
@@ -147,21 +150,26 @@ function mtimeOf(p) { try { return statSync(p).mtimeMs; } catch { return null; }
  */
 function isNew(p, leftover) { const m = mtimeOf(p); return m != null && (leftover == null || m > leftover); }
 /**
- * settled 인데 이번 결과가 없을 때 graceMs 동안 지켜본다 — 'file'(결과가 생겼다) · 'working'(일을 시작했다 — 다시 기다린다) · 'gone' · 'idle'.
- * 제출 직후 남아 있던 idle 에 `agent wait` 가 곧바로 풀리는 형태가 있다(2026-09-23 실측: 레인 18.4초에 "결과 파일 없음", 에이전트는 8분 뒤 결과를 썼다)
+ * settled 인데 이번 결과가 없을 때 until(ms epoch)까지 지켜본다 — 'file'(결과가 생겼다) · 'working'(일을 한다 — 다시 기다린다) · 'gone'(에이전트가 사라졌다) · 'idle'(끝까지 유휴).
+ * 유휴가 끝을 뜻하지 않는 형태가 둘 있다: 제출 직후 남아 있던 idle 에 `agent wait` 가 곧바로 풀린다(2026-09-23 실측: 레인 18.4초에 "결과 파일 없음", 에이전트는 8분 뒤 결과를 썼다) ·
+ * 긴 명령을 돌려 두고 턴을 끝낸 채 완료를 기다린다(그동안 상태는 idle 이고 결과는 몇 분 뒤에 온다).
+ * 상태 조회 한 번의 실패를 "사라졌다" 로 읽지 않는다 — 잠깐 뒤에 한 번 더 본다.
  */
-async function watchSettled(name, env, hasResult, graceMs) {
-  const until = Date.now() + graceMs;
+async function watchIdle(name, env, hasResult, until) {
+  let gap = 1000;
   while (Date.now() < until) {
-    await sleep(Math.max(200, Math.min(2000, until - Date.now())));
+    await sleep(Math.max(200, Math.min(gap, until - Date.now())));
     if (hasResult()) return 'file';
-    const s = agentState(name, env);
-    if (s == null) return 'gone';
+    let s = agentState(name, env);
+    if (s == null) { await sleep(1500); if (hasResult()) return 'file'; s = agentState(name, env); if (s == null) return 'gone'; }
     if (s === 'working' || s === 'blocked') return 'working';
+    gap = Math.min(10000, gap * 2);
   }
-  return 'idle';
+  return hasResult() ? 'file' : 'idle';
 }
-const MAX_REWAITS = 5;
+// 결과 없이 유휴인 레인에 한 번 보내는 알림. 끝났는데 결과를 안 쓴 레인은 이걸 받고 쓰고, 돌려 둔 명령을 기다리는 레인은 계속 기다린다
+const REMIND_TOKEN = 'result file is still missing';
+function remindText(out) { return `The ${REMIND_TOKEN}: ${fwd(out)}. If your work is finished, write the result JSON there now. If you are waiting for a command you started, keep waiting and write the file when it finishes.`; }
 
 /**
  * 기동 직후 다이얼로그 사다리 — 프롬프트를 보내기 *전에* 화면을 읽어 알려진 다이얼로그만 걷는다(최대 4회).
@@ -227,24 +235,6 @@ function worktreeInfo(value) {
   const path = r.worktree?.path ?? r.workspace?.worktree?.checkout_path ?? r.root_pane?.cwd ?? null;
   return { pane, path: path ? fwd(path).replace(/\/+$/, '') : null, workspace: r.workspace?.workspace_id ?? r.root_pane?.workspace_id ?? null, alreadyOpen: !!r.already_open };
 }
-/** 새 worktree 에 메인 체크아웃의 gitignore 파일을 복사하고(worktree_copy) 초기화 명령을 돈다(worktree_init) */
-function prepareWorktree(path, { repoDir, copy = [], init = [], cfg, env, timeoutS = 600 }) {
-  const done = { copied: [], skipped: [], init: [] };
-  for (const rel of copy) {
-    const src = join(repoDir, rel); const dst = join(path, rel);
-    if (!existsSync(src)) { done.skipped.push(rel); continue; }
-    mkdirSync(dirname(dst), { recursive: true }); copyFileSync(src, dst); done.copied.push(rel);
-  }
-  if (init.length) {
-    const shell = resolveShell(cfg ?? {});
-    for (const c of init) {
-      const r = spawnSync(shell.file, shell.args(c), { cwd: path, env, encoding: 'utf8', timeout: timeoutS * 1000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
-      done.init.push({ cmd: c, exit: r.status ?? -1, tail: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().slice(-400) });
-      if (r.status !== 0) break; // 초기화가 깨졌으면 그 다음은 의미가 없다 — 레인은 뜨되 결과에 남긴다
-    }
-  }
-  return done;
-}
 /**
  * worktree 레인의 pane — 순서: ① 브랜치 체크아웃이 이미 열려 있으면 open(already_open) 으로 그 pane ② `fresh` 면 있던 체크아웃을 지우고 ③ 없으면 create.
  * 낡은 브랜치(HEAD 에 없는 커밋 0)는 create 전에 지운다 — 그대로 두면 create 가 옛 베이스를 체크아웃한다(실측).
@@ -272,14 +262,8 @@ function acquireWorktree(lane, repoDir, env, { fresh = false, prep = null } = {}
 
 /** `git worktree list --porcelain` 에서 이 브랜치의 체크아웃 경로 — split 배치용(Herdr 워크스페이스가 아니라 git 이 정본) */
 function localWorktree(branch, repoDir) {
-  const r = git(['worktree', 'list', '--porcelain'], { cwd: repoDir, allowFail: true });
-  if (r.status !== 0) return null;
-  for (const block of r.out.split(/\n\s*\n/)) {
-    const path = /^worktree (.+)$/m.exec(block)?.[1];
-    const br = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (path && br === branch) return { path: fwd(path).replace(/\/+$/, '') };
-  }
-  return null;
+  const w = listWorktrees(repoDir).find(x => x.branch === branch);
+  return w ? { path: w.path } : null;
 }
 
 // ---------------------------------------------------------------- 레인 pane 격자 배치
@@ -317,8 +301,9 @@ function acquireLocalWorktree(lane, repoDir, env, { fresh = false, prep = null, 
   const branch = lane.worktree_branch;
   let existing = localWorktree(branch, repoDir);
   if (existing && fresh) {
-    const rm = git(['worktree', 'remove', '--force', existing.path], { cwd: repoDir, allowFail: true });
-    if (rm.status !== 0) return { error: `git worktree remove 실패(fresh): ${rm.err}` };
+    // 링크를 먼저 끊고 지운다(lib/worktree.mjs) — 준비 명령이 걸어 둔 링크를 따라 메인 쪽 폴더가 지워지거나, 폴더가 남은 채 성공으로 끝나는 것을 막는다
+    const rm = removeWorktree(existing.path, { repoDir, force: true });
+    if (!rm.ok) return { error: `작업트리 제거 실패(fresh): ${rm.reason}` };
     existing = null;
   }
   let path, mode, prepared = null, droppedStale = false;
@@ -328,7 +313,11 @@ function acquireLocalWorktree(lane, repoDir, env, { fresh = false, prep = null, 
     if (stale.kept) return { error: stale.reason };
     droppedStale = !!stale.dropped;
     path = fwd(resolve(repoDir, dir, laneName(lane.lane ?? lane.name)));
-    if (existsSync(path)) { git(['worktree', 'prune'], { cwd: repoDir, allowFail: true }); rmSync(path, { recursive: true, force: true }); } // 등록 안 된 잔재
+    if (existsSync(path)) { // 등록 안 된 잔재 — 같은 이유로 링크부터 끊고 지운다
+      git(['worktree', 'prune'], { cwd: repoDir, allowFail: true });
+      const left = removeDirSafely(path);
+      if (!left.ok) return { error: `남은 폴더를 지우지 못했다(${path}): ${left.reason}` };
+    }
     mkdirSync(dirname(path), { recursive: true });
     const add = git(['worktree', 'add', '-q', '-b', branch, path, 'HEAD'], { cwd: repoDir, allowFail: true });
     if (add.status !== 0) return { error: `git worktree add 실패: ${add.err}` };
@@ -456,38 +445,67 @@ export async function finishLane(ctx, { timeoutS = 900, closePanes = false, dead
   const hasResult = () => isNew(outPath, left.out) || isNew(errFile, left.err);
   let state = null;
 
-  // 5. settled 대기 (+ teach 다이얼로그만 자동 esc 1회 · 곧바로 settled 됐는데 입력창에 문장이 그대로면 enter 1회 뒤 다시 대기
-  //    · 결과 없이 settled 면 settleGraceS 동안 지켜보고 일을 시작했으면 다시 대기 — 최대 MAX_REWAITS 회, 전체 상한은 end)
-  let escaped = false; let renudged = false; let rewaits = 0;
-  for (let round = 0; round < 3 + MAX_REWAITS; round++) {
+  // 5. 끝의 신호는 결과 파일 하나다 — settled(idle·done)는 끝이 아니다.
+  //    긴 명령(테스트)을 돌려 두고 턴을 끝낸 채 완료를 기다리는 레인은 그동안 유휴로 보이고 결과는 몇 분 뒤에 온다. 유휴 30초에 "결과 파일 없음" 으로 닫았던
+  //    레인들이 그 뒤에 결과를 썼다 — 일은 끝났는데 패치는 적용되지 않았다. 그래서 결과 없이 settled 면 settleGraceS 동안 지켜보고, 그래도 유휴면 한 번 알리고
+  //    (끝났으면 결과를 쓰고, 기다리는 중이면 계속 기다리라), 그 뒤로는 상한(end)까지 결과 파일을 기다린다.
+  //    상한 전에 닫는 것은 셋뿐이다 — 에이전트가 사라졌다 · 승인/질문 UI 에서 멈췄다(blocked) · 알린 뒤에도 유휴인데 화면이 사용량 한도다.
+  //    (한도 문구는 알리기 전에는 닫는 근거로 쓰지 않는다 — 기다리는 레인의 마지막 말에 같은 단어가 있을 수 있다. 알린 뒤의 화면 꼬리는 알림과 그 답이다.)
+  //    (teach 다이얼로그만 자동 esc 1회 · 곧바로 settled 됐는데 입력창에 제출 문장이 그대로면 enter 1회)
+  //    결과가 이미 있어도 바퀴는 `agent wait` 로 시작한다 — 턴이 끝난 뒤에 읽어야 쓰는 도중의 파일이나 아직 손대고 있는 작업트리를 건드리지 않는다.
+  //    lane.idle_cap_s 가 있으면(리뷰 레인) 알린 뒤 그만큼 유휴가 이어질 때 닫는다 — 리뷰어는 명령을 돌려 두고 기다릴 일이 없어 유휴는 멈춘 것이다.
+  let escaped = false; let renudged = false; let reminded = false; let rewaits = 0; let stop = null;
+  let idleSince = null; // 알린 뒤 유휴가 이어지기 시작한 때
+  const idleCapS = Number.isFinite(lane.idle_cap_s) ? lane.idle_cap_s : null;
+  const watchMs = Math.max(1, settleGraceS) * 1000;
+  for (;;) {
     const ms = waitMs();
     const w = herdr(['agent', 'wait', name, '--timeout', String(ms)], { cwd, env, timeout: ms + 5000 });
     state = w.ok ? (w.value?.result?.state ?? w.value?.result?.agent?.state ?? agentState(name, env)) : agentState(name, env);
-    if (!w.ok && /timeout/i.test(w.reason ?? '')) return done({ reason: `레인 시간 초과 ${timeoutS}s`, state, screen_tail: screen(name, env, 15).slice(-600) });
+    if (!w.ok && /timeout/i.test(w.reason ?? '')) {
+      // 상한까지 일하고 있다. 그래도 결과가 와 있으면 읽는다 — 끝의 신호는 결과 파일이고, 같은 상한을 나눠 쓰는 뒤쪽 레인은 남은 시간이 거의 없이 여기에 온다
+      if (hasResult()) break;
+      return done({ reason: `레인 시간 초과 ${timeoutS}s`, state, screen_tail: screen(name, env, 15).slice(-600) });
+    }
     if (state === 'blocked') {
       const s = screen(name, env, 25);
       if (!escaped && TEACH_DIALOG.test(s)) { herdr(['agent', 'send-keys', name, 'esc'], { cwd, env }); escaped = true; await sleep(1000); continue; }
       return done({ status: 'blocked', reason: '에이전트가 승인/질문 UI 에서 멈춤 — 사람이 pane 을 볼 것', state, screen_tail: s.slice(-600) });
     }
     if (hasResult()) break;
+    if (end - Date.now() <= 0) { stop = { reason: `레인 시간 초과 ${timeoutS}s` }; break; }
     if (!renudged && promptStillTyped(name, env)) {
       // 제출이 안 된 채 idle 로 굳은 형태(codex 실측) — 결과도 없고 문장이 그대로면 enter 한 번 더 넣고 다시 기다린다
       herdr(['agent', 'send-keys', name, 'enter'], { cwd, env }); renudged = true; res.nudged = true; await sleep(2000); continue;
     }
-    if (rewaits < MAX_REWAITS && end - Date.now() > 0) {
-      const seen = await watchSettled(name, env, hasResult, Math.min(settleGraceS * 1000, end - Date.now()));
-      if (seen === 'working') { rewaits++; continue; }
+    // 알리기 전에는 settleGraceS 만 지켜보고, 알린 뒤에는 그 두 배씩 끊어 상한까지 본다(끊을 때마다 한도 화면인지 확인한다)
+    const seen = await watchIdle(name, env, hasResult, Math.min(end, Date.now() + (reminded ? 2 * watchMs : watchMs)));
+    if (seen === 'file') continue; // 결과가 생겼다 — 턴이 끝나길 한 번 더 기다린 뒤 읽는다
+    if (seen === 'working') { rewaits++; idleSince = null; continue; }
+    if (seen === 'gone') { stop = { reason: '에이전트가 사라졌다(pane 이 셸로 돌아왔다)', screen_tail: paneTail(pane, env) }; break; }
+    if (reminded) {
+      const tail = screen(name, env, 15).slice(-600);
+      if (LIMIT_PATTERN.test(tail)) { stop = { status: 'limit', reason: '사용량 한도 화면에서 멈췄다', screen_tail: tail }; break; }
+      idleSince ??= Date.now() - 2 * watchMs; // 일하다 다시 유휴가 됐다 — 방금 본 조각 내내 유휴였다
+      if (idleCapS != null && Date.now() - idleSince >= idleCapS * 1000) { stop = { reason: `알린 뒤에도 ${idleCapS}s 넘게 유휴였다`, screen_tail: tail }; break; }
+      continue; // 상한까지 결과 파일을 기다린다 — 위의 시간 검사가 닫는다
     }
-    break;
+    if (agentState(name, env) == null) continue; // 그새 사라졌다 — 죽은 pane 에 보낸 글은 셸 명령이 된다. 다음 바퀴가 gone 으로 닫는다
+    herdr(['agent', 'prompt', name, remindText(outPath)], { cwd, env, timeout: 30000 });
+    reminded = true; res.reminded = true; idleSince = Date.now();
+    await sleep(2000);
+    // 글자만 들어가고 제출이 안 된 형태(제출 문장과 같은 실측) — 아직 안 움직이고 알림 문장이 화면에 있으면 enter 한 번
+    if (!hasResult() && agentState(name, env) !== 'working' && cleanScreen(screen(name, env, 12)).includes(REMIND_TOKEN)) herdr(['agent', 'send-keys', name, 'enter'], { cwd, env });
   }
   res.escaped = escaped;
   if (rewaits) res.rewaits = rewaits;
 
   // 6. 결과 파일 — 제출 뒤에 쓰인 것만
   if (!isNew(outPath, left.out)) {
-    const tail = screen(name, env, 15).slice(-600);
+    const tail = stop?.screen_tail ?? screen(name, env, 15).slice(-600);
     const stale = left.out != null ? ' (제출 전부터 있던 파일(못 치움)이 그대로다 — 지난 결과라 읽지 않았다)' : '';
-    return done({ status: LIMIT_PATTERN.test(tail) ? 'limit' : 'failed', reason: isNew(errFile, left.err) ? `레인 보고 오류: ${readFileSync(errFile, 'utf8').slice(0, 300)}` : `결과 파일 없음: ${fwd(outPath)}${stale}`, state, screen_tail: tail });
+    const why = stop?.reason ? ` — ${stop.reason}${reminded && /시간 초과/.test(stop.reason) ? ' · 유휴라 한 번 알렸지만 결과가 오지 않았다' : ''}` : '';
+    return done({ status: stop?.status ?? (LIMIT_PATTERN.test(tail) ? 'limit' : 'failed'), reason: isNew(errFile, left.err) ? `레인 보고 오류: ${readFileSync(errFile, 'utf8').slice(0, 300)}` : `결과 파일 없음: ${fwd(outPath)}${stale}${why}`, state, screen_tail: tail });
   }
   let parsed;
   try { parsed = JSON.parse(readFileSync(outPath, 'utf8')); } catch (e) { return done({ reason: `결과 JSON 파싱 실패: ${e.message}`, state }); }
@@ -532,14 +550,19 @@ function reviewPrompt({ root, diffCmd, files, axes }) {
   ].join('\n');
 }
 
-export function buildVerifySpec({ cfg, root, diffRef, files, slug, kinds, axes, runtimeDir }) {
+/** 리뷰 레인이 알린 뒤에도 유휴일 때 닫는 시간 — 지켜보는 시간(settle_grace_s)의 4배(기본 120초). 리뷰어는 돌려 둔 명령을 기다릴 일이 없다 */
+function reviewIdleCapS(hc) { return 4 * Math.max(1, hc.settle_grace_s ?? 30); }
+
+/** @param rt runtime 폴더의 절대 경로(메인 저장소 것 — main 이 넘긴다). 없으면 root 아래의 runtime_dir */
+export function buildVerifySpec({ cfg, root, diffRef, files, slug, kinds, axes, runtimeDir, rt }) {
   const hc = herdrConfig(cfg);
   const useKinds = kinds?.length ? kinds : (hc.kinds?.verify ?? ['codex']);
-  const outDir = join(root, runtimeDir ?? cfg.runtime_dir, 'issues');
+  const outDir = join(rt ?? join(root, runtimeDir ?? cfg.runtime_dir), 'issues');
   const lanes = useKinds.map(kind => ({
     name: `review-${kind}`.replace(/[^a-z0-9_-]/g, '-').slice(0, 32),
     kind,
     reuse: true,
+    idle_cap_s: reviewIdleCapS(hc),
     out: fwd(join(outDir, `${slug}.herdr-${kind}.json`)),
     prompt: reviewPrompt({ root, diffCmd: `git diff ${diffRef}`, files, axes }),
   }));
@@ -558,9 +581,9 @@ function mergeFindings(run) {
 }
 
 /** reviewer 컨텍스트 정책(issue|always|never) → 이번 호출에서 /new 를 보낼지. 장부 <runtime>/herdr/reviewer-<kind>.json */
-export function reviewerFresh({ cfg, root, kind, slug }) {
+export function reviewerFresh({ cfg, root, kind, slug, rt }) {
   const policy = herdrConfig(cfg).reviewer_context ?? 'issue';
-  const file = join(root, cfg.runtime_dir, 'herdr', `reviewer-${kind}.json`);
+  const file = join(rt ?? join(root, cfg.runtime_dir), 'herdr', `reviewer-${kind}.json`);
   const last = readJson(file);
   const fresh = policy === 'always' ? true : policy === 'never' ? false : (last?.slug ?? null) !== slug;
   writeJson(file, { slug, rounds: (last?.slug === slug ? (last.rounds ?? 0) : 0) + 1, at: new Date().toISOString(), policy });
@@ -571,13 +594,67 @@ export function reviewerFresh({ cfg, root, kind, slug }) {
 
 const LANE_RESULT_SHAPE = '{"name": "<레인 이름>", "status": "done|partial|failed", "files": ["<고친 파일, worktree 루트 기준>"], "tests": {"command": "<실행한 명령>", "passed": 0, "failed": 0}, "notes": "<seam·못 끝낸 것·다음 레인에 줄 말>"}';
 
-function implementPrompt({ lane, keys, wtPath, branch, guides, contracts, maxTurns }) {
+/** 구현 레인의 시간 상한 하한(초) — lane_timeout_s 의 기본값(900)은 리뷰 레인 기준이라, 구현하고 자기 테스트를 한 번 도는 레인은 그 안에 못 끝난다 */
+export const IMPLEMENT_TIMEOUT_FLOOR_S = 3600;
+
+const laneDodIds = lane => (Array.isArray(lane?.dod) ? lane.dod : []).map(d => (typeof d === 'string' ? d : d?.id)).filter(Boolean);
+
+/**
+ * 구현 레인의 검증 규칙 — 자기 테스트만, 한 번에 묶어서. 진입점은 게이트의 --try(상태·판정 기록 없음 · 게이트의 DoD 배치와 같은 명령·환경 파일·판정)다.
+ * 왜: 레인이 러너 명령을 손으로 조립해 여러 번 띄우고, 전체 lint·위반 주입까지 레인마다 돌린 시간이 레인 벽시계의 절반을 넘었다.
+ *     그 검사들은 메인이 레인을 합친 트리의 게이트에서 어차피 한 번 돈다.
+ */
+function verifyRules({ lane, slug, wtPath, cfg, dodItems }) {
+  const gateCmd = `node "${fwd(join(PLUGIN_ROOT, 'scripts', 'gate.mjs'))}" --try`;
+  const where = `--cwd "${fwd(wtPath)}"`;
+  const adapters = Object.entries(cfg?.stacks ?? {}).filter(([, s]) => s?.dod_tests).map(([n, s]) => `${n} = ${s.dod_tests.adapter === 'gradle-junit' ? "테스트 클래스 패턴(예 '*FeeTest*')" : '테스트 파일 경로(그 스택 폴더 기준)'}`);
+  // dod_tests 가 없는 스택은 --try 가 묶어 돌리지 못한다(--stack 으로 지목하면 exit 2) — 그 스택의 테스트는 러너를 직접 부르라고 따로 알린다
+  const bare = Object.entries(cfg?.stacks ?? {}).filter(([, s]) => !s?.dod_tests).map(([n]) => n);
+  const own = new Set(laneDodIds(lane));
+  const hasOwnTests = (dodItems ?? []).some(d => d && own.has(d.id) && !d.human && d.tests && cfg?.stacks?.[d.tests.stack]?.dod_tests);
+  const common = [
+    '- 돌리지 않는 것: 전체 테스트 · 전체 lint · build · 위반 주입 프로브. 전부 메인이 레인들을 합친 트리의 게이트에서 **한 번** 돈다 — 레인마다 돌리면 같은 검사가 레인 수만큼 반복되고, 동시에 도는 러너끼리 서로를 느리게 한다.',
+    '- 띄운 명령은 끝날 때까지 기다린다. 오래 걸린다고 같은 테스트를 또 띄우지 않는다(두 벌이 겹쳐 둘 다 느려진다).',
+    '- 테스트 실행은 통틀어 3번 안팎에서 끝낸다. 그 안에 초록이 안 되면 더 돌리지 말고 status 를 partial 로 두고 notes 에 무엇이 왜 실패하는지 적는다 — 메인이 합친 트리에서 이어 한다.',
+    '- 결과 JSON 의 tests 에는 마지막으로 돌린 명령과 그 통과/실패 건수를 적는다. 돌릴 테스트가 없는 변경(문서·설정)이면 tests.command 를 빈 문자열로 두고 notes 에 그 이유를 적는다.',
+  ];
+  if (!adapters.length) return [
+    '- 구현을 끝낸 뒤 **자기가 쓰거나 고친 테스트만** 그 스택의 러너로 한 번에 묶어 돌린다. 실패하면 고치고 실패한 것만 다시 돌린다.',
+    ...common,
+  ];
+  const select = `${gateCmd} --stack <스택> --select '<패턴>' [--select '<패턴>' …] ${where}`;
+  return [
+    ...(hasOwnTests ? [
+      '- 구현을 끝낸 뒤 아래 명령 **하나**로 이 레인의 DoD 테스트를 한 번에 돌린다. push 전 게이트가 DoD 를 재는 것과 같은 명령·환경 파일·판정(분모·통과 건수 하한)으로 돈다 — 러너 명령을 손으로 조립하지 않는다:',
+      `  \`${gateCmd} --slug ${slug} --lane ${lane.name} ${where}\``,
+      '- 실패하면 고친 뒤 출력의 「다시」 줄에 나온 명령으로 **실패한 것만** 다시 돌린다. 끝으로 위 명령을 한 번 더 돌려 전부 초록인지 본다(「다시」는 실패한 테스트만 돌아 항목의 통과 건수 하한을 재지 않는다).',
+      `- DoD 에 없는 테스트(고친 파일을 덮는 기존 테스트)를 돌려야 하면: \`${select}\``,
+    ] : [
+      '- 구현을 끝낸 뒤 **자기가 쓰거나 고친 테스트만** 아래 명령으로 한 번에 묶어 돌린다(게이트와 같은 환경 파일로 러너를 띄운다 — 러너 명령을 손으로 조립하지 않는다). 실패하면 고친 뒤 출력의 「다시」 줄에 나온 명령으로 실패한 것만 다시 돌린다:',
+      `  \`${select}\``,
+    ]),
+    `  스택과 패턴: ${adapters.join(' · ')}`,
+    ...(bare.length ? [`- 위 명령은 스택 ${bare.join(' · ')} 의 테스트를 돌리지 못한다(그 스택에는 묶어 돌리는 설정이 없다 — \`--stack ${bare[0]}\` 은 실패한다). 그 스택의 테스트를 쓰거나 고쳤으면 그 스택의 러너를 직접 불러 **자기 테스트만 한 번에 묶어** 돌린다.`] : []),
+    ...common,
+  ];
+}
+
+function implementPrompt({ lane, keys, wtPath, branch, guides, contracts, maxTurns, slug, cfg, dodItems }) {
   const guideText = Object.keys(guides).length ? Object.entries(guides).map(([k, p]) => `- ${k}: ${fwd(join(wtPath, p))}`).join('\n') : '- (가이드 경로가 없다 — 계약과 레인 지시만으로 진행한다)';
   const files = (lane.files ?? []).length ? lane.files.map(f => `- ${fwd(f)}`).join('\n') : '- (파일 목록이 비었다 — 레인 지시의 범위 안에서만 만든다)';
-  const dod = (lane.dod ?? []).length ? lane.dod.map(d => `- ${typeof d === 'string' ? d : `${d.id ?? ''} ${d.text ?? ''}`.trim()}`).join('\n') : null;
+  // 레인의 dod 는 DoD id 배열이다(plan) — 상태의 DoD 에서 문구와 선택을 찾아 붙인다. 못 찾으면 적힌 그대로
+  const byId = new Map((dodItems ?? []).filter(d => d?.id).map(d => [d.id, d]));
+  const dod = (lane.dod ?? []).length ? lane.dod.map((d) => {
+    const it = byId.get(typeof d === 'string' ? d : d?.id);
+    if (it) return `- ${it.id} ${it.text ?? ''}${it.tests ? ` (${it.tests.stack}: ${(it.tests.select ?? []).join(', ')})` : ''}`.trimEnd();
+    return `- ${typeof d === 'string' ? d : `${d.id ?? ''} ${d.text ?? ''}`.trim()}`;
+  }).join('\n') : null;
   return [
-    `너는 이슈 ${keys.join(', ') || '(키 없음)'} 의 구현 레인 "${lane.name}" 이다.`,
-    `작업 디렉터리는 git worktree \`${fwd(wtPath)}\`(브랜치 \`${branch}\`) 이고, 모든 파일 경로는 이 디렉터리 기준이다. 이 디렉터리 밖은 읽기만 한다.`,
+    // 이슈마다 레인 하나일 때(lane.key) — 이 레인이 맡은 이슈와, 같은 브랜치의 다른 이슈는 다른 레인의 몫임을 첫 줄에 밝힌다
+    lane.key && keys.length > 1
+      ? `너는 이슈 ${lane.key} 의 구현 레인 "${lane.name}" 이다. 이 브랜치가 한 번에 처리하는 이슈: ${keys.join(', ')} — 나머지 이슈는 다른 레인이 맡는다.`
+      : `너는 이슈 ${lane.key ?? (keys.join(', ') || '(키 없음)')} 의 구현 레인 "${lane.name}" 이다.`,
+    `작업 디렉터리는 git worktree \`${fwd(wtPath)}\`(브랜치 \`${branch}\`) 이고, 모든 파일 경로는 이 디렉터리 기준이다. 이 디렉터리 밖은 읽기만 한다(끝의 결과 규약이 지정한 결과 파일만 예외다).`,
     '',
     '## 개발 가이드 (먼저 정독한다)',
     guideText,
@@ -593,12 +670,14 @@ function implementPrompt({ lane, keys, wtPath, branch, guides, contracts, maxTur
     ...(dod ? ['', '## 이 레인이 닫아야 할 DoD', dod] : []),
     '',
     '## 규율',
-    '- 담당 파일 밖은 수정하지 않는다. 다른 레인이 **다른 worktree** 에서 같은 이슈를 동시에 구현한다 — 겹치면 메인이 패치를 합칠 때 충돌한다.',
+    '- 담당 파일 밖은 수정하지 않는다. 다른 레인이 **다른 worktree** 에서 같은 브랜치의 다른 몫을 동시에 구현한다 — 겹치면 메인이 패치를 합칠 때 충돌한다.',
     '- 경계(seam — 한쪽이 부르고 다른 쪽이 받는 곳)에서 상대 레인의 파일을 고쳐야 하면 고치지 말고 notes 에 적는다.',
     '- **git commit · git push · git stash · 브랜치 전환을 하지 않는다.** 변경은 worktree 에 그대로 둔다 — 메인 세션이 diff 를 패치로 회수해 게이트·리뷰·커밋한다. `git add` 도 필요 없다.',
-    '- 완료 전 해당 스택의 테스트를 실제로 실행하고 명령·통과/실패 건수를 기록한다. 실행하지 않았으면 tests.command 를 빈 문자열로 두고 status 는 partial 이다.',
     '- 실패를 숨기지 않는다 — 못 끝냈으면 status 는 partial 또는 failed 다. 초록으로 보이게 테스트를 지우거나 게이트 명령을 바꾸지 않는다.',
     `- 턴 상한 ${maxTurns} — 넘기기 전에 결과 JSON 을 쓰고 멈춘다.`,
+    '',
+    '## 검증 — 자기 테스트만, 한 번에 묶어서',
+    ...verifyRules({ lane, slug, wtPath, cfg, dodItems }),
     '',
     '## 산출물',
     '1) worktree 안의 코드 변경(커밋하지 않은 상태 그대로)',
@@ -613,53 +692,36 @@ export function assignKind(lane, i, pool) {
   return { kind: p[i % p.length], source: 'pool' };
 }
 
-export function buildImplementSpec({ cfg, root, slug, state, only = [], contracts = '', maxTurns }) {
+/** @param rt runtime 폴더의 절대 경로(메인 저장소 것 — main 이 넘긴다). 없으면 root 아래의 runtime_dir. 레인 결과 파일과 레인 작업트리가 그 아래에 놓인다 */
+export function buildImplementSpec({ cfg, root, slug, state, only = [], contracts = '', maxTurns, rt }) {
   const hc = herdrConfig(cfg);
   const pool = hc.kinds?.implement ?? ['claude'];
   const declared = (state?.lanes ?? []).filter(l => l && l.name);
   const picked = only.length ? declared.filter(l => only.includes(l.name)) : declared;
-  const outDir = join(root, cfg.runtime_dir, 'issues');
+  const outDir = join(rt ?? join(root, cfg.runtime_dir), 'issues');
   const placement = hc.lane_placement === 'workspace' ? 'workspace' : 'split';
-  const worktreeDir = hc.worktree_dir ?? `${cfg.runtime_dir}/herdr/worktrees/${slug}`;
+  // 절대 경로면 acquireLocalWorktree 가 그대로 쓴다(상대 경로는 일하는 트리 기준) — 작업트리 세션에서도 레인 작업트리는 메인 저장소 runtime 아래에 판다
+  const worktreeDir = hc.worktree_dir ?? fwd(laneWorktreeRoot(rt ?? cfg.runtime_dir, slug)); // 이슈를 마감할 때의 정리(removeLaneLeftovers)가 같은 자리에서 남은 폴더를 찾는다
   const lanes = picked.map((l, i) => {
     const { kind, source } = assignKind(l, i, pool);
-    const branch = `lane/${slug}/${laneName(l.name)}`;
+    const branch = laneBranch(slug, l.name);
     return {
       name: laneName(`impl-${l.name}`), lane: l.name, kind, kind_source: source, kind_reason: l.kind_reason ?? null,
       reuse: true, worktree_branch: branch, placement, worktree_dir: worktreeDir,
       out: fwd(join(outDir, `${slug}.lane-${l.name}.json`)),
       // 프롬프트의 worktree 경로는 pane 을 잡은 뒤에야 안다 — startLane 직전에 채운다(prompt_of)
-      prompt_of: (wtPath) => implementPrompt({ lane: l, keys: state?.keys ?? [], wtPath, branch, guides: state?.guides ?? {}, contracts, maxTurns: maxTurns ?? 60 }),
+      prompt_of: (wtPath) => implementPrompt({ lane: l, keys: state?.keys ?? [], wtPath, branch, guides: state?.guides ?? {}, contracts, maxTurns: maxTurns ?? 60, slug, cfg, dodItems: state?.dod ?? [] }),
     };
   });
   return {
-    lanes, parallel: true, timeout_s: hc.lane_timeout_s ?? 900, close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {}, auto_trust: hc.auto_trust !== false, ...(hc.settle_grace_s != null ? { settle_grace_s: hc.settle_grace_s } : {}),
+    lanes, parallel: true, timeout_s: Math.max(hc.lane_timeout_s ?? 900, IMPLEMENT_TIMEOUT_FLOOR_S), close_panes: hc.close_panes ?? false, kind_args: hc.kind_args ?? {}, auto_trust: hc.auto_trust !== false, ...(hc.settle_grace_s != null ? { settle_grace_s: hc.settle_grace_s } : {}),
     placement, worktree_dir: worktreeDir,
     prep: { copy: hc.worktree_copy ?? [], init: hc.worktree_init ?? [], cfg },
     skipped: only.length ? declared.filter(l => !only.includes(l.name)).map(l => l.name) : [],
   };
 }
 
-/**
- * worktree 의 변경(추적·비추적 전부)을 바이너리 패치로 뽑는다 — 인덱스는 잠깐 쓰고 되돌린다.
- * 레인이 커밋해 버린 경우(규율 위반)도 잃지 않도록 `git diff <base>` 축이 아니라 "지금 트리 vs 그 worktree 의 HEAD" 를 잰다.
- */
-export function harvestWorktree(wtPath, patchFile) {
-  const add = git(['add', '-A'], { cwd: wtPath, allowFail: true });
-  if (add.status !== 0) return { ok: false, reason: `git add 실패: ${add.err}` };
-  const diff = spawnSync('git', ['diff', '--cached', '--binary', '--no-color'], { cwd: wtPath, encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
-  const stat = git(['diff', '--cached', '--numstat'], { cwd: wtPath, allowFail: true });
-  git(['reset', '-q'], { cwd: wtPath, allowFail: true });
-  if (diff.status !== 0) return { ok: false, reason: `git diff 실패: ${(diff.stderr ?? '').trim()}` };
-  const text = diff.stdout ?? '';
-  const rows = stat.out ? stat.out.split('\n').filter(Boolean).map(l => l.split('\t')) : [];
-  const files = rows.map(r => fwd(r[2] ?? ''));
-  const ins = rows.reduce((n, r) => n + (Number(r[0]) || 0), 0), del = rows.reduce((n, r) => n + (Number(r[1]) || 0), 0);
-  if (!text.trim()) return { ok: true, empty: true, files: [], insertions: 0, deletions: 0, file: null };
-  mkdirSync(dirname(patchFile), { recursive: true });
-  writeFileSync(patchFile, text, 'utf8');
-  return { ok: true, empty: false, files, insertions: ins, deletions: del, file: fwd(patchFile) };
-}
+// 레인 작업트리의 변경을 패치로 뽑는 것(harvestWorktree)은 lib/worktree.mjs 에 있다 — 이슈를 마감할 때의 레인 정리가 「회수해 둔 패치와 지금 내용이 같은가」를 같은 함수로 잰다.
 
 /** 패치를 메인 체크아웃에 적용한다. 깨끗이 안 들어가면 3-way — 충돌 표식이 파일에 남고 'conflict' 로 보고한다(사람·메인이 푼다) */
 export function applyPatch(root, patchFile) {
@@ -674,14 +736,16 @@ export function applyPatch(root, patchFile) {
 function recordLane(root, state, orig, patch) {
   const prev = (state?.lanes ?? []).find(l => l.name === orig) ?? { name: orig, model: 'unknown' };
   const rec = { ...prev, ...patch };
-  const r = spawnSync(process.execPath, [join(PLUGIN_ROOT, 'scripts', 'issue-set.mjs'), '--cwd', root, '--lane', JSON.stringify(rec)], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  // 브랜치를 못박는다 — 레인이 도는 동안 이 트리의 브랜치가 바뀌어도(다른 세션) 읽은 그 이슈의 상태에 쓴다
+  const r = spawnSync(process.execPath, [join(PLUGIN_ROOT, 'scripts', 'issue-set.mjs'), '--cwd', root, ...(state?.branch ? ['--branch', state.branch] : []), '--lane', JSON.stringify(rec)], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   return r.status === 0 ? { ok: true } : { ok: false, reason: (r.stderr || r.stdout || '').trim().slice(0, 300) };
 }
 
 // ---------------------------------------------------------------- runner(게이트)
 
-function runnerPane(cfg, root, env) {
-  const file = join(root, cfg.runtime_dir, 'herdr', 'runner.json');
+/** runner pane 은 일하는 트리마다 하나다(장부 파일 이름에 그 트리의 브랜치 슬러그) — runtime 을 메인과 작업트리가 같이 쓰므로 한 파일이면 서로의 pane 에 명령을 보낸다 */
+function runnerPane(rt, root, slug, env) {
+  const file = join(rt, 'herdr', `runner-${slug}.json`);
   const saved = readJson(file);
   if (saved?.pane) {
     const g = herdr(['pane', 'get', saved.pane], { cwd, env, timeout: 5000 });
@@ -718,7 +782,10 @@ async function main() {
   const proj = locateProject(cwd);
   if (!proj || !proj.configPath) fail(2, 'harness.json 이 없다');
   const cfg = loadConfig(proj.configPath);
+  // root = 일하는 트리(레인의 시작점 HEAD · 패치를 적용할 곳 · 게이트가 재는 트리). rt = 상태·결과·장부를 두는 runtime — 다른 스크립트와 같이 언제나 메인 저장소 것이다
+  // (lib/config.mjs locateProject). 작업트리 세션에서 runtime 을 그 작업트리 아래로 잡으면 상태 JSON 을 못 찾고 결과가 메인과 갈린다.
   const root = proj.toplevel;
+  const rt = join(proj.configRoot, cfg.runtime_dir);
   const hc = herdrConfig(cfg);
 
   // gate-run: runner pane 안에서 실제로 도는 명령(셸 무관 — 한 프로세스가 gate.mjs 실행·결과 파일·완료 표식까지)
@@ -739,10 +806,10 @@ async function main() {
     const level = flag('--main') ? 'main' : flag('--full') ? 'full' : flag('--related') ? 'related' : flag('--dod') ? 'dod' : 'commit';
     const h = herdrEnv(env);
     if (!h.inside || hc.enabled === false) { const o = { ok: false, reason: !h.inside ? 'outside herdr' : 'herdr.enabled=false' }; if (asJson) console.log(JSON.stringify(o)); else console.log(`[herdr-lanes] gate: ${o.reason} — gate.mjs 를 직접 돌릴 것`); return; }
-    const rp = runnerPane(cfg, root, env);
+    const rp = runnerPane(rt, root, branchSlug(currentBranch(root) ?? 'work'), env);
     if (rp.error) { const o = { ok: false, reason: rp.error }; if (asJson) console.log(JSON.stringify(o)); else console.log(`[herdr-lanes] gate: ${rp.error}`); return; }
     const nonce = `${Date.now().toString(36)}`;
-    const out = join(root, cfg.runtime_dir, 'herdr', `gate-${level}-${nonce}.json`);
+    const out = join(rt, 'herdr', `gate-${level}-${nonce}.json`);
     const cmdLine = `node "${fwd(join(PLUGIN_ROOT, 'scripts', 'herdr-lanes.mjs'))}" gate-run --${level}${flag('--stage-all') ? ' --stage-all' : ''}${opt('--stacks') ? ` --stacks ${opt('--stacks')}` : ''} --cwd "${fwd(root)}" --out "${fwd(out)}" --nonce ${nonce}`;
     const run = herdr(['pane', 'run', rp.pane, cmdLine], { cwd, env, timeout: 10000 });
     if (!run.ok) { const o = { ok: false, reason: `pane run 실패: ${run.reason}` }; if (asJson) console.log(JSON.stringify(o)); else console.log(`[herdr-lanes] ${o.reason}`); return; }
@@ -752,9 +819,17 @@ async function main() {
     const timeoutMs = (cfg.gate?.timeout_s ?? 1800) * 1000 + 60000;
     const w = herdr(['pane', 'wait-output', rp.pane, '--match', `GATE_DONE_${nonce}`, '--timeout', String(timeoutMs)], { cwd, env, timeout: timeoutMs + 5000 });
     const result = readJson(out);
-    const o = { ...base, waited: w.ok, summary: result?.summary ?? null, exit: result?.exit ?? null, reason: w.ok ? undefined : `wait-output: ${w.reason}` };
+    // 기다림이 먼저 끝났는데 결과 파일이 없으면 게이트는 pane 에서 아직 돌거나 대기열(lib/queue.mjs)에서 차례를 기다리는 중이다 — 실패가 아니다
+    const pending = !w.ok && !result;
+    // exit 75 = 대기열 상한(gate.queue_max_wait_s)을 넘겨 게이트가 돌지 않았다 — 결과 파일은 있고 요약만 없다
+    const queueTimeout = result?.exit === 75 && !result?.summary;
+    const reason = queueTimeout ? '대기열 상한(gate.queue_max_wait_s)을 넘겼다 — 게이트는 돌지 않았고 기록도 없다. 다시 실행할 것' : w.ok ? undefined : `wait-output: ${w.reason}`;
+    const o = { ...base, waited: w.ok, ...(pending ? { pending: true } : {}), summary: result?.summary ?? null, exit: result?.exit ?? null, reason };
     if (asJson) console.log(JSON.stringify(o, null, 2));
-    else console.log(o.summary ? `[herdr-lanes] gate ${o.summary.level} ${o.summary.overall} · ${o.summary.duration_s}s · runner ${rp.pane}` : `[herdr-lanes] gate 결과 없음 — ${o.reason ?? '결과 파일 미생성'} (runner ${rp.pane} 화면을 볼 것)`);
+    else console.log(o.summary ? `[herdr-lanes] gate ${o.summary.level} ${o.summary.overall} · ${o.summary.duration_s}s · runner ${rp.pane}`
+      : pending ? `[herdr-lanes] gate 는 아직 끝나지 않았다(${o.reason}) — runner ${rp.pane} 에서 돌고 있거나 대기열에서 차례를 기다린다. 다시 띄우지 말고 결과 파일을 기다릴 것: ${base.out}`
+      : queueTimeout ? `[herdr-lanes] gate 는 돌지 않았다 — ${reason}`
+      : `[herdr-lanes] gate 결과 없음 — ${o.reason ?? '결과 파일 미생성'} (runner ${rp.pane} 화면을 볼 것)`);
     return;
   }
 
@@ -765,15 +840,17 @@ async function main() {
   if (cmd === 'implement') {
     const emit = (o) => { if (asJson) console.log(JSON.stringify(o, null, 2)); else console.log(`[herdr-lanes] implement: ${o.reason}`); };
     const h = herdrEnv(env);
-    const on = ['implement', 'all'].includes(hc.lanes ?? 'off') && hc.enabled !== false;
-    if (!h.inside || !on) { emit({ ok: false, reason: !h.inside ? 'outside herdr' : hc.enabled === false ? 'herdr.enabled=false' : `herdr.lanes=${hc.lanes ?? 'off'} — Herdr 구현 레인은 꺼져 있다(harness.json.herdr.lanes 를 implement 또는 all 로)`, lanes: [] }); return; }
-    const stFile = statePath(cfg, root, slug);
+    const on = herdrImplementOn(cfg);
+    // --harvest: 레인을 띄우지 않고 이미 있는 결과 파일과 레인 작업트리만 회수한다 — 실행기가 먼저 죽었거나(레인 pane 은 계속 돈다) 시간 초과로 닫은 뒤 결과가 온 경우. Herdr 가 필요 없다(git 만 쓴다)
+    const harvestOnly = flag('--harvest');
+    if (!harvestOnly && (!h.inside || !on)) { emit({ ok: false, reason: !h.inside ? 'outside herdr' : hc.enabled === false ? 'herdr.enabled=false' : `herdr.lanes=${hc.lanes ?? 'off'} — Herdr 구현 레인은 꺼져 있다(harness.json.herdr.lanes 를 implement 또는 all 로)`, lanes: [] }); return; }
+    const stFile = statePath(cfg, proj.configRoot, slug);
     let state; try { state = readState(stFile); } catch (e) { emit({ ok: false, reason: `상태 JSON 읽기 실패: ${e.message}`, lanes: [] }); return; }
     if (!state) { emit({ ok: false, reason: `상태 JSON 이 없다: ${fwd(stFile)} — issue-start 먼저`, lanes: [] }); return; }
     const only = (opt('--lanes') ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const contractsFile = opt('--contracts-file');
     const contracts = contractsFile ? readFileSync(resolve(contractsFile), 'utf8') : (opt('--contracts') ?? '');
-    const spec = buildImplementSpec({ cfg, root, slug, state, only, contracts, maxTurns: Number(opt('--max-turns')) || undefined });
+    const spec = buildImplementSpec({ cfg, root, rt, slug, state, only, contracts, maxTurns: Number(opt('--max-turns')) || undefined });
     if (!spec.lanes.length) { emit({ ok: false, reason: only.length ? `--lanes ${only.join(',')} 에 맞는 레인 선언이 없다` : '상태 JSON 에 lanes 선언이 없다 — plan 이 먼저다', lanes: [], skipped: spec.skipped }); return; }
     // 베이스 — worktree 는 메인 체크아웃의 HEAD 에서 갈린다. 커밋 안 된 수정은 레인이 못 본다(계약은 먼저 커밋한다는 규율의 근거)
     const base = git(['rev-parse', '--short', 'HEAD'], { cwd: root, allowFail: true }).out || null;
@@ -783,20 +860,41 @@ async function main() {
       if (asJson) console.log(JSON.stringify(view, null, 2)); else for (const l of view.lanes) console.log(`[herdr-lanes] ${l.name} ← ${l.lane} · ${l.kind}(${l.kind_source}) · ${l.worktree_branch} → ${l.out}`);
       return;
     }
-    const ledgerFile = join(root, cfg.runtime_dir, 'herdr', `implement-${slug}.json`);
+    const ledgerFile = laneLedgerFile(rt, slug);
     const ledger = readJson(ledgerFile) ?? { slug, lanes: {} };
-    herdrPing(cwd, `implement lanes ${spec.lanes.map(l => `${l.lane}:${l.kind}`).join('+')}`);
-
-    // 띄우기 — 전부 띄운 뒤 기다린다. 프롬프트(worktree 경로 포함)는 startLane 이 pane 을 잡은 뒤 prompt_of 로 만든다
-    const started = [];
-    for (const l of spec.lanes) {
-      const prevApplied = ['yes', 'empty'].includes(ledger.lanes?.[l.lane]?.applied);
-      const fresh = flag('--fresh') || prevApplied; // 이미 회수·적용한 worktree 는 새로 판다 — 낡은 diff 를 두 번 적용하지 않는다
-      started.push(await startLane(l, { env, kindArgs: spec.kind_args, laneCwd: root, fresh, prep: spec.prep, autoTrust: spec.auto_trust }));
-    }
-    const deadline = Date.now() + spec.timeout_s * 1000;
+    const wasApplied = l => ['yes', 'empty'].includes(ledger.lanes?.[l.lane]?.applied);
     const results = [];
-    for (const c of started) results.push(await finishLane(c, { timeoutS: spec.timeout_s, closePanes: false, deadline, ...(spec.settle_grace_s != null ? { settleGraceS: spec.settle_grace_s } : {}) }));
+    if (harvestOnly) {
+      // 이미 메인에 들어간 레인(적용됨 · 충돌 표식이 남은 것)은 건드리지 않는다 — 같은 diff 를 두 번 넣지 않는다.
+      // 나머지는 결과 파일이 있으면 done 으로 읽고 아래 회수·적용을 그대로 탄다. 결과 파일이 없는 레인은 아직 돌고 있을 수 있으니 그 작업트리에 손대지 않는다(아래 pending)
+      const landed = l => ['yes', 'conflict'].includes(ledger.lanes?.[l.lane]?.applied);
+      spec.skipped.push(...spec.lanes.filter(landed).map(l => `${l.lane}(${ledger.lanes[l.lane].applied === 'yes' ? '이미 적용' : '충돌 표식이 메인에 남아 있다'})`));
+      spec.lanes = spec.lanes.filter(l => !landed(l));
+      if (!spec.lanes.length) { emit({ ok: false, reason: '회수할 레인이 없다 — 전부 이미 메인에 들어갔다(장부)', lanes: [], skipped: spec.skipped }); return; }
+      for (const l of spec.lanes) {
+        const known = ledger.lanes?.[l.lane] ?? {};
+        const wtPath = localWorktree(l.worktree_branch, root)?.path ?? (known.path && existsSync(known.path) ? known.path : null); // workspace 배치의 작업트리는 장부의 경로로 찾는다
+        const parsed = readJson(resolve(l.out));
+        results.push({
+          name: l.name, kind: l.kind, pane: known.pane ?? null, out: fwd(l.out), seconds: 0, reused: false,
+          worktree: wtPath ? { branch: l.worktree_branch, path: wtPath, workspace: known.workspace ?? null, mode: 'harvest', placement: known.placement ?? spec.placement } : null,
+          ...(!parsed ? { status: 'failed', pending: true, reason: `결과 파일 없음: ${fwd(l.out)} — 레인이 아직 돌고 있으면 끝난 뒤 다시 회수할 것` }
+            : parsed.status === 'limit' ? { status: 'limit', reason: `사용량 한도: ${parsed.summary ?? ''}`, result: parsed }
+            : !wtPath ? { status: 'failed', reason: `레인 작업트리를 찾지 못했다(${l.worktree_branch}) — 결과 파일만 있다`, result: parsed }
+            : { status: 'done', result: parsed }),
+        });
+      }
+    } else {
+      herdrPing(cwd, `implement lanes ${spec.lanes.map(l => `${l.lane}:${l.kind}`).join('+')}`);
+      // 띄우기 — 전부 띄운 뒤 기다린다. 프롬프트(worktree 경로 포함)는 startLane 이 pane 을 잡은 뒤 prompt_of 로 만든다
+      const started = [];
+      for (const l of spec.lanes) {
+        const fresh = flag('--fresh') || wasApplied(l); // 이미 회수·적용한 worktree 는 새로 판다 — 낡은 diff 를 두 번 적용하지 않는다
+        started.push(await startLane(l, { env, kindArgs: spec.kind_args, laneCwd: root, fresh, prep: spec.prep, autoTrust: spec.auto_trust }));
+      }
+      const deadline = Date.now() + spec.timeout_s * 1000;
+      for (const c of started) results.push(await finishLane(c, { timeoutS: spec.timeout_s, closePanes: false, deadline, ...(spec.settle_grace_s != null ? { settleGraceS: spec.settle_grace_s } : {}) }));
+    }
 
     // 회수·적용 — 순서대로. 결과 파일이 없어도(레인이 죽어도) worktree 에 남은 변경은 패치로 뽑아 둔다(적용은 안 함)
     const noApply = flag('--no-apply');
@@ -806,9 +904,10 @@ async function main() {
       const rec = { name: r.name, lane: l.lane, kind: l.kind, kind_source: l.kind_source, status: r.status, reason: r.reason, pane: r.pane, worktree: r.worktree ?? null, out: r.out, seconds: r.seconds, sidecar: null, patch: null, applied: 'skipped' };
       const sc = r.result && typeof r.result === 'object' ? r.result : null;
       if (sc) rec.sidecar = { status: ['done', 'partial', 'failed'].includes(sc.status) ? sc.status : 'partial', files: Array.isArray(sc.files) ? sc.files.map(fwd) : [], tests: { command: String(sc.tests?.command ?? ''), passed: Number(sc.tests?.passed) || 0, failed: Number(sc.tests?.failed) || 0 }, notes: String(sc.notes ?? '') };
+      if (r.pending) { outLanes.push(rec); continue; } // 아직 돌고 있을 수 있는 레인 — 작업트리·장부·상태에 손대지 않고 보고만 한다
       const wtPath = r.worktree?.path;
       if (wtPath && existsSync(wtPath)) {
-        const hv = harvestWorktree(wtPath, join(root, cfg.runtime_dir, 'herdr', 'patches', `${slug}.lane-${l.lane}.patch`));
+        const hv = harvestWorktree(wtPath, lanePatchFile(rt, slug, l.lane));
         rec.patch = hv.ok ? { file: hv.file, files: hv.files, insertions: hv.insertions, deletions: hv.deletions, empty: hv.empty } : { error: hv.reason };
         const worth = r.status === 'done' && rec.sidecar && rec.sidecar.status !== 'failed';
         if (!hv.ok) rec.applied = 'skipped';
@@ -827,7 +926,7 @@ async function main() {
     const failed = results.filter(r => r.status !== 'done').map(r => `${r.name}: ${r.reason ?? r.status}`);
     const out = {
       ok: outLanes.some(l => l.applied === 'yes' || l.applied === 'no-apply'), slug, base, dirty_base: dirty, lanes: outLanes, failed, skipped: spec.skipped, applied, conflicts,
-      next: conflicts ? '충돌 표식(<<<<<<<)을 메인이 푼 뒤 seam 대조 → gate --commit' : applied ? `seam(레인 경계) 대조 → gate --commit → commit. worktree·pane 은 남아 있다(닫기: ${spec.placement === 'workspace' ? 'herdr worktree remove --workspace <id>' : 'git worktree remove <path> · herdr pane close <id>'})` : '적용된 패치가 없다 — lanes[].reason · patch 를 볼 것',
+      next: conflicts ? '충돌 표식(<<<<<<<)을 메인이 푼 뒤 seam 대조 → gate --commit' : applied ? `seam(레인 경계) 대조 → gate --commit → commit. worktree·pane 은 남아 있다(닫기: ${spec.placement === 'workspace' ? 'herdr worktree remove --workspace <id>' : 'herdr pane close <id> — 레인 작업트리와 레인 브랜치는 이슈를 마감할 때 issue-start.mjs --remove-worktree <KEY> 가 함께 치운다'})` : '적용된 패치가 없다 — lanes[].reason · patch 를 볼 것',
     };
     herdrPing(cwd, `implement lanes done ${results.filter(r => r.status === 'done').length}/${results.length} · applied ${applied}${conflicts ? ` · conflict ${conflicts}` : ''}`, conflicts ? { title: `구현 레인 패치 충돌 ${conflicts}`, sound: 'request' } : failed.length ? { title: `구현 레인 미완 ${failed.length}`, body: failed[0], sound: 'request' } : { title: `구현 레인 완료 · 적용 ${applied}`, sound: 'done' });
     if (asJson) console.log(JSON.stringify(out, null, 2));
@@ -848,9 +947,9 @@ async function main() {
     }
     const since = opt('--since');
     const diffCmd = since ? `git diff ${since}` : `git diff ${diffRef}`;
-    const out = fwd(join(root, cfg.runtime_dir, 'issues', `${slug}.herdr-${kind}${since ? '-delta' : ''}.json`));
-    const fresh = reviewerFresh({ cfg, root, kind, slug });
-    const lane = { name: `review-${kind}`, kind, reuse: true, fresh, out, prompt: reviewPrompt({ root, diffCmd, files, axes: opt('--axes') }) };
+    const out = fwd(join(rt, 'issues', `${slug}.herdr-${kind}${since ? '-delta' : ''}.json`));
+    const fresh = reviewerFresh({ cfg, root, rt, kind, slug });
+    const lane = { name: `review-${kind}`, kind, reuse: true, fresh, out, idle_cap_s: reviewIdleCapS(hc), prompt: reviewPrompt({ root, diffCmd, files, axes: opt('--axes') }) };
     // 모델·effort 는 pane 을 새로 띄울 때만 먹는다 — 재사용되는 상주 reviewer 는 기동 시점 값을 유지한다
     const modelArgs = reviewModelArgs(cfg, kind);
     if (modelArgs.length) lane.args = [...((hc.kind_args ?? {})[kind] ?? DEFAULT_KIND_ARGS[kind] ?? []), ...modelArgs];
@@ -870,9 +969,9 @@ async function main() {
     if (cmd === 'verify') { const o = { ok: false, reason: `herdr.lanes=${hc.lanes ?? 'off'} — Herdr 리뷰 레인은 꺼져 있다(harness.json.herdr.lanes 를 verify 또는 all 로)`, lanes: [], findings: [] }; if (asJson) console.log(JSON.stringify(o)); else console.log(`[herdr-lanes] ${o.reason}`); return; }
   }
   const kinds = (opt('--kinds') ?? '').split(',').map(s => s.trim()).filter(Boolean);
-  const spec = buildVerifySpec({ cfg, root, diffRef, files, slug, kinds, axes: opt('--axes') });
+  const spec = buildVerifySpec({ cfg, root, rt, diffRef, files, slug, kinds, axes: opt('--axes') });
   if (cmd === 'plan') { if (asJson) console.log(JSON.stringify(spec, null, 2)); else console.log(`[herdr-lanes] plan: ${spec.lanes.map(l => `${l.name}(${l.kind}) → ${l.out}`).join(' · ')}`); return; }
-  for (const l of spec.lanes) l.fresh = reviewerFresh({ cfg, root, kind: l.kind, slug });
+  for (const l of spec.lanes) l.fresh = reviewerFresh({ cfg, root, rt, kind: l.kind, slug });
   herdrPing(cwd, `verify lanes ${spec.lanes.map(l => l.kind).join('+')}`);
   const run = await runSpec(spec, { kindArgs: spec.kind_args, laneCwd: root, autoTrust: hc.auto_trust !== false });
   const findings = mergeFindings(run);

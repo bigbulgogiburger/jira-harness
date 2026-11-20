@@ -4,7 +4,7 @@
 import { unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { git, gitLines } from './git.mjs';
+import { git, gitPaths } from './git.mjs';
 import { matchesAny } from './config.mjs';
 
 let seq = 0;
@@ -16,10 +16,11 @@ export function fingerprintTree({ cwd, base = 'index', excludes = [] }) {
   try {
     const source = base === 'index' ? git(['write-tree'], { cwd }).out : 'HEAD';
     git(['read-tree', source], { cwd, env });
-    const listed = gitLines(['ls-files'], { cwd, env });
+    // 경로는 NUL 구분으로 주고받는다 — 줄 단위면 git 이 한글 이름을 따옴표·8진수로 바꿔 내서 제외 glob 에 걸리지 않는다(그 파일이 지문에 남는다)
+    const listed = gitPaths(['ls-files'], { cwd, env });
     const drop = listed.filter(p => matchesAny(p, excludes));
     // -f: 임시 인덱스에서만 빼는 것이라 "staged 내용이 파일·HEAD 와 다르다" 는 보호가 필요 없다(상태 JSON 이 add -A 로 올라간 경우가 그렇다)
-    if (drop.length) git(['rm', '--cached', '-f', '-q', '-r', '--ignore-unmatch', '--pathspec-from-file=-'], { cwd, env, input: drop.join('\n') + '\n' });
+    if (drop.length) git(['rm', '--cached', '-f', '-q', '-r', '--ignore-unmatch', '--pathspec-from-file=-', '--pathspec-file-nul'], { cwd, env, input: drop.join('\0') + '\0' });
     return git(['write-tree'], { cwd, env }).out;
   } finally {
     if (existsSync(tmpIndex)) { try { unlinkSync(tmpIndex); } catch { /* ignore */ } }

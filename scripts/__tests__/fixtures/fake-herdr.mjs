@@ -1,6 +1,7 @@
 // fake-herdr.mjs — Herdr CLI 대역. 호출 인자를 FAKE_HERDR_LOG 에 한 줄씩 남기고 명령별로 고정 JSON 을 낸다.
 //   FAKE_HERDR_FAIL=1              모든 호출 exit 1
-//   FAKE_HERDR_STATES=working,done  `agent get` 이 호출마다 순서대로 돌려줄 상태(마지막 값 반복). 기본 done
+//   FAKE_HERDR_STATES=working,done  `agent get` 이 호출마다 순서대로 돌려줄 상태(마지막 값 반복). 기본 done.
+//                                   `gone` 이면 그 조회는 agent_not_found exit 1(`agent get`·`agent wait` 둘 다) — 도중에 사라진 형태
 //   FAKE_HERDR_STATE_FILE=<path>    호출 횟수 카운터 파일(순서 상태용)
 //   FAKE_HERDR_READ=<text>          `agent read`/`pane read` 본문
 //   FAKE_HERDR_READ_SEQ=<json>      `agent read` 가 호출마다 순서대로 돌려줄 본문 배열(마지막 값 반복 · FAKE_HERDR_READ 보다 우선) — 기동 다이얼로그 사다리용
@@ -13,6 +14,9 @@
 //                                   에이전트가 **제출 뒤에** 결과를 쓰는 것을 흉내. 실행기는 제출 전에 지난 결과를 치우므로 결과를 미리 <out> 에 두면 안 된다
 //   FAKE_HERDR_WRITE_AT=<n>         그 복사를 prompt 때가 아니라 n 번째(0부터) 상태 조회(agent get/wait) 때 한다 — 일찍 settle 된 뒤에야 결과가 생기는 형태.
 //                                   FAKE_HERDR_STATE_FILE 필요(<STATE_FILE>.out 에 <out> 을 적어 둔다)
+//   FAKE_HERDR_WAIT_TIMEOUT=1       `agent wait` 가 working 상태를 받으면 시간 초과(exit 1 · timeout)로 끝난다 — 상한까지 일하는 레인
+//   FAKE_HERDR_WRITE_ON_REMIND=1    그 복사를 제출 때가 아니라 "결과 파일이 아직 없다" 알림(`agent prompt` · 문장에서 <out> 을 읽는다)을 받을 때 한다 —
+//                                   끝났는데 결과를 안 쓴 레인이 알림을 받고 쓰는 형태
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (process.env.FAKE_HERDR_LOG) appendFileSync(process.env.FAKE_HERDR_LOG, JSON.stringify(args) + '\n');
@@ -31,12 +35,16 @@ function nextState() {
   return seq[Math.min(n, seq.length - 1)];
 }
 function onPrompt(text) {
+  const remind = /result file is still missing: (.+?)\. If your work is finished/.exec(String(text ?? ''));
+  if (remind) { if (process.env.FAKE_HERDR_WRITE_ON_REMIND) agentWrites(remind[1]); return; }
   const m = /^Read the file (.+)\.prompt\.md and do exactly/.exec(String(text ?? ''));
   if (!m) return; // /new 같은 명령
   const f = process.env.FAKE_HERDR_STATE_FILE;
+  if (process.env.FAKE_HERDR_WRITE_ON_REMIND) return; // 알림을 받아야 쓴다
   if (process.env.FAKE_HERDR_WRITE_AT && f) writeFileSync(`${f}.out`, m[1]);
   else agentWrites(m[1]);
 }
+function notFound() { process.stderr.write('{"error":{"code":"agent_not_found"}}'); process.exit(1); }
 function fakeWorktrees() { return process.env.FAKE_HERDR_WORKTREES ? JSON.parse(process.env.FAKE_HERDR_WORKTREES) : []; }
 function fakeWorktreePath(branch) {
   const dir = process.env.FAKE_HERDR_WORKTREE_DIR;
@@ -70,8 +78,13 @@ else if (a === 'worktree' && b === 'remove') out({ result: { removed: true, work
 else if (a === 'notification') out({ result: { shown: true } });
 else if (a === 'agent' && b === 'start') out({ result: { agent: { name: args[2], pane_id: args[args.indexOf('--pane') + 1], kind: args[args.indexOf('--kind') + 1], state: 'idle' } } });
 else if (a === 'agent' && b === 'prompt') { onPrompt(args[3]); out({ result: { status: 'agent_prompted' } }); }
-else if (a === 'agent' && b === 'get') { if (process.env.FAKE_HERDR_GET_FAIL) { process.stderr.write('{"error":{"code":"agent_not_found"}}'); process.exit(1); } out({ result: { agent: { name: args[2], state: nextState() } } }); }
-else if (a === 'agent' && b === 'wait') out({ result: { state: nextState() } });
+else if (a === 'agent' && b === 'get') { if (process.env.FAKE_HERDR_GET_FAIL) notFound(); const s = nextState(); if (s === 'gone') notFound(); out({ result: { agent: { name: args[2], state: s } } }); }
+else if (a === 'agent' && b === 'wait') {
+  const s = nextState(); if (s === 'gone') notFound();
+  // FAKE_HERDR_WAIT_TIMEOUT=1: 아직 일하는 중(working)이면 기다리다 시간 초과로 끝난 형태 — exit 1 + timeout
+  if (process.env.FAKE_HERDR_WAIT_TIMEOUT && s === 'working') { process.stderr.write('{"error":{"code":"timeout","message":"wait timeout"}}'); process.exit(1); }
+  out({ result: { state: s } });
+}
 else if (a === 'agent' && b === 'read') process.stdout.write(nextRead());
 else if (a === 'agent' && b === 'send-keys') out({ result: { sent: args.slice(3) } });
 else if (a === 'agent' && b === 'list') out({ result: { agents: process.env.FAKE_HERDR_AGENTS ? JSON.parse(process.env.FAKE_HERDR_AGENTS) : [] } });

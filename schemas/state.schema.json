@@ -14,7 +14,7 @@
     "guides": { "type": "object", "additionalProperties": { "type": "string" } },
     "decisions": {
       "type": "array",
-      "items": { "type": "object", "required": ["q", "a"], "properties": { "q": { "type": "string" }, "a": { "type": "string" }, "at": { "type": "string" } } }
+      "items": { "type": "object", "required": ["q", "a"], "properties": { "q": { "type": "string" }, "a": { "type": "string" }, "at": { "type": "string" }, "assumed": { "type": "boolean", "description": "사람이 정하지 않고 드라이버가 혼자 고른 해석(issue-set --assume) — 마감 댓글 맨 위에 「확인이 필요한 가정」으로 올라간다" } } }
     },
     "touched": { "type": "array", "items": { "type": "string" } },
     "subtasks": {
@@ -77,6 +77,7 @@
           },
           "human": { "type": "boolean" },
           "last": { "type": "string", "enum": ["PASS", "FAIL", "PENDING", "SKIPPED"] },
+          "evidence": { "type": "string", "description": "그 결과의 근거 한 줄(issue-set --dod-result … --evidence) — human 항목은 이것 없이 PASS 로 남지 않는다" },
           "at": { "type": "string" }
         }
       }
@@ -87,6 +88,7 @@
       "properties": {
         "level": { "type": "string", "enum": ["commit", "dod", "related", "full"], "description": "commit=경량 · dod=경량+DoD(gate.push_level=dod 의 push 전제) · related=관련 테스트(gate.push_level=related 의 push 전제) · full=전량" },
         "related": { "type": "object", "description": "related 게이트의 스택별 선택 — {mode: selected|full|none, selected, tests, failed, reason}" },
+        "lint_scope": { "type": "object", "description": "lint_changed 가 있는 스택의 lint 범위 — {mode: changed|none|full, files, reason}. changed = 바뀐 파일만 돌았다(전체 lint 가 아니다) · none = 바뀐 lint 대상이 없어 always 만 돌았거나 돌리지 않았다(검사 0) · full = 전체로 넘어갔고 reason 이 그 까닭" },
         "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "git write-tree(인덱스 트리) id" },
         "results": {
           "type": "object",
@@ -94,10 +96,21 @@
           "additionalProperties": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "NOT_RUN"] }
         },
         "stacks": { "type": "object" },
+        "failed_tests": {
+          "type": "object",
+          "description": "test 단계가 실패한 스택별 {suites, tests, names[]} — 실패한 스위트(gradle: FQCN)·파일(vitest: 스택 dir 기준 경로) 개수와 이름(실패 건수 많은 순 30개까지). 명령을 바꾸지 않고 읽을 수 있는 러너 리포트가 있을 때만 채운다(stacks.<name>.dod_tests): gradle 은 이번 실행이 쓴 XML 에서 언제나, vitest 는 게이트가 DoD·관련 테스트 판정 때문에 JSON 리포터를 이미 붙인 실행에서만(--main 은 gradle 만). DoD tests 항목의 실패는 여기가 아니라 dod[].last 에 남는다. 판정에는 쓰지 않는다 — 단독 재실행용",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["suites", "tests", "names"],
+            "properties": { "suites": { "type": "integer" }, "tests": { "type": "integer" }, "names": { "type": "array", "items": { "type": "string" } } }
+          }
+        },
+        "timed_out": { "type": "array", "items": { "type": "string" }, "description": "gate.timeout_s 에 걸려 중단된 단계 — 예: be.test · dod D3 · dod-batch fe. 테스트 실패와 구분한다" },
         "dod": { "type": "string", "description": "예: 3/4 (human 1 제외)" },
         "log": { "type": ["string", "null"] },
         "log_sha256": { "type": ["string", "null"] },
         "duration_s": { "type": "number" },
+        "queue_wait_s": { "type": "number", "description": "대기열에서 차례를 기다린 시간(초). 줄을 서지 않은 게이트(경량·dod·--no-queue)에는 없다. 실제로 걸린 시간 = queue_wait_s + duration_s" },
         "at": { "type": "string" },
         "full_at": { "type": ["string", "null"] }
       }

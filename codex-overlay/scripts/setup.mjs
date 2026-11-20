@@ -12,10 +12,11 @@ import { join, resolve, relative, dirname, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { DEFAULTS, CONFIG_REL, loadConfig, parseBranch, statePath, newState, writeState, readState, matchesAny } from './lib/config.mjs';
+import { DEFAULTS, CONFIG_REL, loadConfig, statePath, newState, writeState } from './lib/config.mjs';
 import { assertValid } from './lib/schema.mjs';
 import { git } from './lib/git.mjs';
 import { findBash } from './lib/shell.mjs';
+import { injectCases, probeBranch } from './lib/inject.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(HERE, '..');
@@ -585,37 +586,6 @@ function cmdUpgrade() {
 
 // ================================================================= inject (위반 주입)
 
-function probeBranch(cfg) {
-  const cands = [String(cfg.branch_template ?? DEFAULTS.branch_template).replace('{keys}', `${cfg.issue_prefix}-1`), `feat/${cfg.issue_prefix}-1`];
-  for (const b of cands) if (parseBranch(b, cfg)) return b;
-  return null;
-}
-
-/** 코드 변경으로 인정되는(=docs_only 가 아닌) 프로브 파일 경로를 고른다. */
-function probeFile(cfg) {
-  const stack = Object.values(cfg.stacks ?? {})[0];
-  const cands = [stack && stack.dir && stack.dir !== '.' ? `${String(stack.dir).replace(/\/$/, '')}/.jira-harness-probe` : null, '.jira-harness-probe', 'src/.jira-harness-probe'].filter(Boolean);
-  for (const p of cands) if (!matchesAny(p, cfg.docs_only_paths)) return p;
-  return null;
-}
-
-function runHook(dir, op = 'commit', toolName = 'Bash') {
-  const command = op === 'push' ? 'git push -u origin HEAD' : 'git commit -m probe';
-  const event = JSON.stringify({ tool_name: toolName, tool_input: { command }, cwd: dir });
-  const r = run(NODE, [join(HERE, 'commit-gate.mjs')], { cwd: dir, input: event });
-  const out = r.out.trim();
-  let decision = 'pass', reason = r.err.trim();
-  if (out) {
-    try {
-      const j = JSON.parse(out);
-      if (j.hookSpecificOutput?.permissionDecision === 'deny') { decision = 'deny'; reason = j.hookSpecificOutput.permissionDecisionReason; }
-      else if (j.systemMessage) { decision = 'warn'; reason = j.systemMessage; }
-    } catch { reason = out.slice(0, 200); }
-  }
-  const m = new RegExp(`git ${op}: ([A-Z_]+) —`).exec(reason);
-  return { decision, code: m ? m[1] : 'UNKNOWN', reason };
-}
-
 function cmdInject() {
   const cfgPath = join(cwd, CONFIG_REL);
   if (!existsSync(cfgPath)) die(`${CONFIG_REL} 이 없다 — setup write 를 먼저 할 것`);
@@ -624,62 +594,13 @@ function cmdInject() {
   const clone = makeProbeClone(cwd);
   if (!clone.ok) emit({ root: cwd, clone: false, reason: clone.reason, cases: [] }, 1, [`[setup] 위반 주입 불가 — ${clone.reason}`]);
 
-  const cases = [];
-  const record = (name, expected, got, extra = {}) => cases.push({ case: name, expected, got, ok: got === expected, ...extra });
-  try {
-    const probe = probeFile(cfg);
-    const branch = probeBranch(cfg);
-    if (!probe) { record('branch-pattern', 'BRANCH_PATTERN', 'INCONCLUSIVE', { detail: 'docs_only_paths 밖의 프로브 파일 경로를 만들 수 없다' }); }
-    if (!branch) { record('commit-without-gate', 'NO_GATE', 'INCONCLUSIVE', { detail: 'branch_pattern 에 맞는 이슈 브랜치 이름을 만들 수 없다' }); }
-    if (probe && branch) {
-      const write = text => { mkdirSync(dirname(join(clone.dir, probe)), { recursive: true }); writeFileSync(join(clone.dir, probe), text, 'utf8'); };
-
-      // (a) 패턴 밖 브랜치에서 코드 커밋 → BRANCH_PATTERN deny
-      run('git', ['checkout', '-q', '-b', 'jira-harness-probe-outside'], { cwd: clone.dir });
-      write('probe a\n');
-      run('git', ['add', '-A'], { cwd: clone.dir });
-      const a = runHook(clone.dir);
-      record('branch-pattern', 'BRANCH_PATTERN', a.code, { decision: a.decision });
-
-      // (b) 이슈 브랜치 + 상태 JSON + 게이트 기록 없음 → NO_GATE deny
-      run('git', ['checkout', '-q', '-b', branch], { cwd: clone.dir });
-      const slug = branch.replace(/[\/\\]/g, '-');
-      const sPath = statePath(cfg, clone.dir, slug);
-      writeState(sPath, newState(branch, [`${cfg.issue_prefix}-1`]));
-      const b = runHook(clone.dir);
-      record('commit-without-gate', 'NO_GATE', b.code, { decision: b.decision });
-
-      // (b') 같은 상태에서 PowerShell 툴로 커밋 → 같은 NO_GATE deny. 한 셸만 보는 훅은 다른 셸로 그냥 뚫린다(존재 ≠ 실효)
-      const bp = runHook(clone.dir, 'commit', 'PowerShell');
-      record('powershell-commit-without-gate', 'NO_GATE', bp.code, { decision: bp.decision });
-
-      // (c) gate.mjs --commit 실행 후 → 통과(OK). 프로젝트 게이트 명령이 실제로 실패하면 GATE_FAIL 이 나온다.
-      const g = run(NODE, [join(HERE, 'gate.mjs'), '--commit', '--json', '--cwd', clone.dir], { cwd: clone.dir });
-      let gateNote = null;
-      if (g.status !== 0) gateNote = (g.err.trim().split('\n').filter(l => /FAIL|오류|실패/.test(l)).pop() ?? `gate exit ${g.status}`).slice(0, 200);
-      const st = readState(sPath);
-      if (st?.gate?.tree) {
-        st.review = { tree: st.gate.tree, files: [], codex: 'skipped', lanes: 0, findings: 0, blockers_open: 0, round: 1, delta_passes: 0, at: new Date().toISOString() };
-        writeState(sPath, st);
-      }
-      const c = runHook(clone.dir);
-      record('commit-after-gate', 'OK', c.code, { decision: c.decision, detail: gateNote });
-
-      // (d) 경량 게이트만 통과한 상태의 push → GATE_LEVEL deny. push 판정은 **커밋된** 변경을 보므로 clone 안에서 실제로 커밋한다.
-      if (c.code === 'OK') {
-        const commit = run('git', ['commit', '-q', '-m', 'jira-harness probe'], { cwd: clone.dir });
-        if (commit.status !== 0) record('push-without-full-gate', 'GATE_LEVEL', 'INCONCLUSIVE', { detail: `clone 안 커밋 실패: ${commit.err.trim().slice(0, 160)}` });
-        else {
-          const d = runHook(clone.dir, 'push');
-          record('push-without-full-gate', 'GATE_LEVEL', d.code, { decision: d.decision });
-        }
-      } else record('push-without-full-gate', 'GATE_LEVEL', 'INCONCLUSIVE', { detail: '커밋 게이트가 통과하지 못해 push 축을 볼 수 없다' });
-    }
-  } finally { dropProbeClone(clone.dir); }
+  // 케이스 본체는 lib/inject.mjs — Claude 판·Codex 판 setup 이 같이 쓴다(두 파일에 베껴 두면 한쪽만 고쳐진다)
+  let cases;
+  try { cases = injectCases(cfg, clone.dir); } finally { dropProbeClone(clone.dir); }
 
   const bad = cases.filter(c => !c.ok);
   emit({ root: cwd, clone: true, mode: cfg.mode, cases, ok: bad.length === 0 }, bad.length ? 1 : 0,
-    cases.map(c => `${c.ok ? 'OK  ' : 'FAIL'} ${c.case.padEnd(22)} 기대 ${c.expected} · 실측 ${c.got}${c.detail ? ` (${c.detail})` : ''}`));
+    cases.map(c => `${c.ok ? 'OK  ' : 'FAIL'} ${c.case.padEnd(30)} 기대 ${c.expected} · 실측 ${c.got}${c.detail ? ` (${c.detail})` : ''}`));
 }
 
 // ================================================================= 진입점

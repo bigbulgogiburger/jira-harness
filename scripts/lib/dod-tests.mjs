@@ -62,7 +62,8 @@ export function readJunitSuites(dir) {
 export function readVitestReport(reportPath, stackDir) {
   let j;
   try { j = JSON.parse(readFileSync(reportPath, 'utf8')); } catch { return null; }
-  return (Array.isArray(j.testResults) ? j.testResults : []).map(t => {
+  if (!j || typeof j !== 'object') return null; // `null`·숫자 같은 JSON 은 리포트가 아니다 — 깨진 파일과 같이 다룬다(던지면 게이트가 판정을 남기지 못하고 죽는다)
+  return (Array.isArray(j.testResults) ? j.testResults : []).filter(t => t && typeof t === 'object').map(t => {
     const abs = String(t.name ?? '');
     const ar = Array.isArray(t.assertionResults) ? t.assertionResults : [];
     const n = st => ar.filter(a => a.status === st).length;
@@ -85,11 +86,30 @@ export function vitestMatches(filter, rel) {
   return f.length > 0 && fwd(rel).includes(f);
 }
 
-/** 이번 실행의 리포트를 거둔다 — gradle 은 exit≠0 이면 실행 뒤에 쓰인 XML 만, vitest 는 리포트 파일(없으면 []) */
-export function collectEntries(spec, stackDir, { reportPath = null, exit = 0, since = 0 } = {}) {
+/**
+ * 실행 **전**의 리포트 상태 — gradle-junit 은 스위트 이름 → XML 의 mtime. vitest 는 리포트 파일을 실행 전에 지우므로 필요 없다(null).
+ * 실행이 비정상 종료했을 때 「이번 실행이 쓴 XML」을 가려내는 기준이다(collectEntries 의 before).
+ */
+export function snapshotReports(spec, stackDir) {
+  if (spec.adapter !== 'gradle-junit') return null;
+  const dir = join(stackDir, spec.reports ?? DEFAULT_JUNIT_REPORTS);
+  const snap = new Map();
+  if (existsSync(dir)) for (const f of readdirSync(dir)) if (/^TEST-.*\.xml$/.test(f)) snap.set(f.slice(5, -4), statSync(join(dir, f)).mtimeMs);
+  return snap;
+}
+
+/**
+ * 이번 실행의 리포트를 거둔다 — gradle 은 exit≠0 이면 이번 실행이 쓴 XML 만, vitest 는 리포트 파일(없으면 []).
+ * 「이번 실행이 쓴 XML」: before(실행 전 상태 — snapshotReports)를 받았으면 그때와 달라진 파일(새로 생겼거나 mtime 이 바뀐 것)이다.
+ * 못 받았으면 시작 시각 1초 전부터 쓰인 것으로 본다 — 직전 실행이 방금 쓴 XML 이 그 1초 안에 들어오므로, 같은 리포트 폴더에 쓰는 실행의
+ * 바로 뒤에서 도는 실행(관련 테스트 단계 → DoD 배치 · 잇달아 부른 --try)은 반드시 before 를 준다: 배치가 리포트를 못 쓰고 죽었는데
+ * 직전 실행의 통과가 이번 판정으로 읽힌다.
+ */
+export function collectEntries(spec, stackDir, { reportPath = null, exit = 0, since = 0, before = null } = {}) {
   if (spec.adapter === 'gradle-junit') {
     const all = readJunitSuites(join(stackDir, spec.reports ?? DEFAULT_JUNIT_REPORTS));
-    return exit === 0 ? all : all.filter(s => s.mtime >= since - 1000);
+    if (exit === 0) return all;
+    return before ? all.filter(s => before.get(s.name) !== s.mtime) : all.filter(s => s.mtime >= since - 1000);
   }
   if (spec.adapter === 'vitest') return (reportPath && readVitestReport(reportPath, stackDir)) || [];
   return [];

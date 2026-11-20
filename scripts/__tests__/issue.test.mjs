@@ -1,5 +1,6 @@
 // issue.test.mjs — issue-start.mjs · issue-set.mjs 통합 테스트. gate.test.mjs 의 makeRepo 패턴을 복제한다
 // (기존 테스트 파일은 수정하지 않는다는 규칙 때문에 여기서 자체 헬퍼를 둔다).
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -143,13 +144,42 @@ test('status: NO_STATE(패턴 일치·상태 없음) · OUTSIDE_PATTERN(패턴 �
   assert.equal(ok.out.dirty.untracked, 0);
 });
 
-test('status: 3키 이상이면 next 힌트가 recon 을 언급한다', () => {
+test('status: lane_runner — 구현 레인을 돌리는 수단은 설정과 세션 둘 다로 정해진다(herdr.lanes 가 all 이어도 Herdr 밖이면 workflow · Herdr 안이어도 설정이 꺼져 있으면 workflow)', () => {
+  const dir = makeRepo();
+  assert.equal(start(dir, 'ABC-1').out.code, 'STARTED');
+  const cfgPath = join(dir, '.claude/harness.json');
+  const setHerdr = h => { const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')); cfg.herdr = h; writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n'); };
+  // Herdr 표식을 전부 지우고 필요한 것만 넣는다(이 테스트를 Herdr pane 안에서 돌려도 같다) · Herdr 바이너리는 대역
+  const runner = marks => {
+    const env = { ...process.env, JIRA_HARNESS_HERDR: `node:${join(HERE, 'fixtures/fake-herdr.mjs')}` };
+    for (const k of ['HERDR_PANE_ID', 'HERDR_ENV', 'HERDR_SOCKET_PATH']) delete env[k];
+    const r = spawnSync(NODE, [join(SCRIPTS, 'issue-start.mjs'), '--status', '--cwd', dir, '--json'], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...env, ...marks } });
+    const out = JSON.parse(r.stdout.trim());
+    assert.equal(out.code, 'OK', r.stderr);
+    return out.lane_runner;
+  };
+  const IN = { HERDR_PANE_ID: 'w1:p1' };
+  assert.equal(runner({}), 'workflow', '설정 없음 · Herdr 밖');
+  assert.equal(runner(IN), 'workflow', '설정 없음 · Herdr 안');
+  for (const lanes of ['implement', 'all']) {
+    setHerdr({ lanes });
+    assert.equal(runner({}), 'workflow', `herdr.lanes=${lanes} 이어도 Herdr 밖 세션은 워크플로 레인으로 돈다`);
+    assert.equal(runner(IN), 'herdr', `herdr.lanes=${lanes} · Herdr 안`);
+    assert.equal(runner({ HERDR_ENV: '1' }), 'herdr');
+  }
+  setHerdr({ lanes: 'verify' });
+  assert.equal(runner(IN), 'workflow', '리뷰 레인만 켠 설정은 구현 레인을 켜지 않는다');
+  setHerdr({ lanes: 'all', enabled: false });
+  assert.equal(runner(IN), 'workflow', 'herdr.enabled=false 면 실행기가 돌지 않는다');
+});
+
+test('status: 키가 여러 개여도 다음 단계는 grill 이다(따로 도는 정찰 단계는 없다)', () => {
   const dir = makeRepo();
   const r = start(dir, 'ABC-1,ABC-2,ABC-3');
   assert.equal(r.out.code, 'STARTED');
   const ok = status(dir);
   assert.equal(ok.out.code, 'OK');
-  assert.ok(ok.out.next.includes('recon'), ok.out.next);
+  assert.equal(ok.out.next, 'grill');
 });
 
 test('issue-set --stage · --decision', () => {

@@ -130,20 +130,33 @@ export function decide(op, cwd, opts = {}) {
   }
 
   const tree = fingerprintTree({ cwd: root, base: op === 'commit' || afterCommit ? 'index' : 'HEAD', excludes: cfg.fingerprint_exclude });
+  const bad = judgeRecords({ state, tree, cfg, configRoot: proj.configRoot, root, deny, pushLike: op === 'push' });
+  if (bad) return bad;
+  return { decision: 'pass', code: 'OK', reason: recordsSummary(state) };
+}
 
+function recordsSummary(state) {
+  return `gate ${state.gate.level}@${state.gate.at} · review r${state.review.round ?? '?'}@${state.review.at}`;
+}
+
+/**
+ * 게이트·리뷰 기록이 이 트리를 대변하는가 — commit 과 push 가 같은 사다리를 쓴다. 통과면 null, 아니면 deny(code, reason) 의 결과.
+ * @param pushLike true 면 push 전제 게이트(gate.push_level 이상)와 그 단계의 필수 키 전부를 요구한다. false 면 경량(compile·lint).
+ */
+function judgeRecords({ state, tree, cfg, configRoot, root, deny, pushLike }) {
   // 게이트 기록
   const g = state.gate;
-  const need = op === 'commit' ? 'gate.mjs --commit' : pushGateCommand(cfg);
+  const need = pushLike ? pushGateCommand(cfg) : 'gate.mjs --commit';
   if (!g) return deny('NO_GATE', `게이트 기록 없음 — ${need} 를 먼저 실행할 것`);
-  if (op === 'push' && !pushLevels(cfg).includes(g.level)) return deny('GATE_LEVEL', `push 는 ${pushLevels(cfg).join('·')} 게이트가 필요하다(기록은 ${g.level}) — ${need}`);
+  if (pushLike && !pushLevels(cfg).includes(g.level)) return deny('GATE_LEVEL', `push 는 ${pushLevels(cfg).join('·')} 게이트가 필요하다(기록은 ${g.level}) — ${need}`);
   const gt = treeAccepted(g.tree, tree, cfg, root);
   if (!gt.ok) return deny('GATE_STALE', `게이트 기록 이후 코드가 바뀌었다(${gt.changed ? gt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — ${need} 재실행`);
   const r = g.results ?? {};
   // DoD 는 push 전제 게이트에서만 돈다 — 커밋은 compile·lint, push 는 그 기록 단계의 필수 키 전부(전량: build·test·extra·dod · 관련: test·dod · dod: dod)
-  const bad = (op === 'commit' ? REQUIRED_KEYS.commit : REQUIRED_KEYS[g.level] ?? REQUIRED_KEYS.full).filter(k => !OK.has(r[k] ?? 'NOT_RUN'));
+  const bad = (pushLike ? REQUIRED_KEYS[g.level] ?? REQUIRED_KEYS.full : REQUIRED_KEYS.commit).filter(k => !OK.has(r[k] ?? 'NOT_RUN'));
   if (bad.length) return deny('GATE_FAIL', `게이트 결과 미통과: ${bad.map(k => `${k}=${r[k] ?? 'NOT_RUN'}`).join(' · ')} — ${need}`);
   if (g.log) {
-    const logFile = join(proj.configRoot, g.log);
+    const logFile = join(configRoot, g.log);
     if (!existsSync(logFile)) return deny('GATE_LOG_MISSING', `게이트 로그가 없다(${g.log}) — ${need} 재실행`);
     if (g.log_sha256 && sha256File(logFile) !== g.log_sha256) return deny('GATE_LOG_MISMATCH', `게이트 로그 해시가 기록과 다르다(${g.log}) — ${need} 재실행`);
   }
@@ -154,8 +167,7 @@ export function decide(op, cwd, opts = {}) {
   const rt = treeAccepted(rv.tree, tree, cfg, root);
   if (!rt.ok) return deny('REVIEW_STALE', `리뷰 이후 바뀐 파일이 있다(${rt.changed ? rt.changed.slice(0, 5).join(', ') : '트리 비교 불가'}) — 델타 리뷰(verify --delta) 필요`);
   if ((rv.blockers_open ?? 0) > 0) return deny('REVIEW_BLOCKERS', `리뷰 blocker ${rv.blockers_open}건 미해소`);
-
-  return { decision: 'pass', code: 'OK', reason: `gate ${g.level}@${g.at} · review r${rv.round ?? '?'}@${rv.at}` };
+  return null;
 }
 
 // Bash 와 PowerShell 둘 다 본다 — PowerShell 의 `& git …`(호출 연산자)·`git.exe`·`if ($?) { git push }` 스크립트블록도 같은 op 다.

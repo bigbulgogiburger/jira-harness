@@ -1,5 +1,6 @@
 // Herdr 연동 실측 — herdr CLI 대역(fixtures/fake-herdr.mjs)으로 호출 인자를 검사한다.
 //   herdr-report(사이드바 토큰·알림) · gate/issue-set/commit-gate 의 자동 보고 · Herdr 플러그인 진입점(herdr-plugin.mjs) · 매니페스트 정합
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';

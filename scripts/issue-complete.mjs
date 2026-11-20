@@ -14,6 +14,7 @@ import { currentBranch, git, stagedFiles, unstagedFiles, untrackedFiles } from '
 import { fingerprintTree } from './lib/tree.mjs';
 import { treeAccepted, sha256File, REQUIRED_KEYS, pushLevels, pushGateCommand } from './lib/gate-core.mjs';
 import { herdrPing } from './lib/herdr.mjs';
+import { isAssumption, isHumanDod } from './lib/plan-check.mjs';
 
 // ---------- 인자 ----------
 const argv = process.argv.slice(2);
@@ -127,21 +128,32 @@ if (existsSync(claudeMd) && maxLines != null) {
 
 // ---------- 요약·마감 댓글 ----------
 const dod = state.dod ?? [];
-const probes = dod.filter(d => d.probe && !d.human);
-const humans = dod.filter(d => d.human || !d.probe);
+// 사람 확인은 게이트와 같은 기준(isHumanDod: human 이거나 probe·tests 가 모두 없다)으로 센다 — 「probe 가 없으면 사람 확인」으로 세면 tests 항목이 섞인다
+const humans = dod.filter(isHumanDod);
+const testItems = dod.filter(d => d.tests && !isHumanDod(d));
+const probes = dod.filter(d => d.probe && !d.tests && !isHumanDod(d));
 const probePass = probes.filter(d => d.last === 'PASS').length;
+const testPass = testItems.filter(d => d.last === 'PASS').length;
+const humanDone = humans.filter(d => d.last === 'PASS');
 const humanPending = humans.filter(d => d.last !== 'PASS').map(d => d.id);
+const dodParts = [
+  probes.length ? `프로브 ${probePass}/${probes.length} PASS` : null,
+  testItems.length ? `테스트 항목 ${testPass}/${testItems.length} PASS` : null,
+  humans.length ? `사람 확인 ${humanDone.length}/${humans.length} 확인${humanPending.length ? `(미확인 ${humanPending.join(', ')})` : ''}` : null,
+].filter(Boolean).join(' · ') || '항목 없음';
+const humanEvidenceLines = humanDone.map(d => `  - ${d.id}: ${d.evidence ?? '(근거 기록 없음)'}`);
+const assumptions = (state.decisions ?? []).filter(isAssumption).map(d => ({ q: d.q, a: d.a, at: d.at ?? null }));
 
 const stackLine = Object.entries(g.stacks ?? {})
   .map(([name, steps]) => `${name}(${Object.entries(steps).map(([k, v]) => `${k} ${v}`).join(' · ')})`)
   .join(' / ');
 const resultLine = GATE_KEYS.map(k => `${k} ${results[k] ?? 'NOT_RUN'}`).join(' · ');
-const dodTestItems = dod.filter(d => d.tests && !d.human).length; // dod 게이트의 유일한 테스트 — 0 이면 댓글에 「검사 0」을 드러낸다
+const dodTestItems = testItems.length; // dod 게이트의 유일한 테스트 — 0 이면 댓글에 「검사 0」을 드러낸다
 
 const gateSummary = {
   level: g.level, tree: g.tree, at: g.at, results, stacks: g.stacks ?? null,
   dod: g.dod ?? null, dod_probe_pass: probePass, dod_probe_total: probes.length, dod_human: humans.length,
-  log: g.log ?? null, duration_s: g.duration_s ?? null, related: g.related ?? null,
+  log: g.log ?? null, duration_s: g.duration_s ?? null, queue_wait_s: g.queue_wait_s ?? null, related: g.related ?? null,
 };
 const reviewSummary = {
   tree: rv.tree, at: rv.at, round: rv.round ?? null, delta_passes: rv.delta_passes ?? 0,
@@ -161,13 +173,18 @@ const timing = {
   stage_offsets_s: Object.fromEntries(Object.entries(firstAt).filter(([k]) => k !== "start").map(([k, v]) => [k, secs(startAt, v)])),
   gate_commit_runs: hist.filter(h => h.stage === "gate" && /commit/.test(h.note ?? "")).length,
   gate_full_duration_s: g.duration_s ?? null, gate_level: g.level,
+  // 대기열에서 차례를 기다린 시간 — 게이트가 돈 시간(duration)과 따로 적는다. 합쳐 적으면 「게이트가 느리다」와 「줄이 길다」를 가를 수 없다
+  gate_queue_wait_s: g.queue_wait_s ?? null,
 };
+const waitNote = timing.gate_queue_wait_s >= 1 ? ` + 대기 ${fmtDur(Math.round(timing.gate_queue_wait_s))}` : '';
 const timingLine = startAt
-  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · ${g.level === 'related' ? '관련 테스트' : g.level === 'dod' ? '경량+DoD' : '전량'} 게이트 ${fmtDur(timing.gate_full_duration_s)})`
+  ? `- 소요: 총 ${fmtDur(timing.total_s)} (start 기준 첫 도달 — ${Object.entries(timing.stage_offsets_s).map(([k, v]) => `${k} +${fmtDur(v)}`).join(" · ") || "단계 기록 없음"} · 커밋 게이트 ${timing.gate_commit_runs}회 · ${g.level === 'related' ? '관련 테스트' : g.level === 'dod' ? '경량+DoD' : '전량'} 게이트 ${fmtDur(timing.gate_full_duration_s)}${waitNote})`
   : null;
 
 const comment = [
   `${keys.length ? keys.join(', ') + ' ' : ''}구현을 마치고 브랜치 \`${branch}\` 를 원격에 올렸습니다.`,
+  // 사람이 정하지 않은 해석은 맨 위에 — 아래 수치보다 먼저 읽혀야 뒤집을 수 있다
+  ...(assumptions.length ? [`- 확인이 필요한 가정 ${assumptions.length}건(사람 결정 없이 고른 해석):`, ...assumptions.map(a => `  - ${a.q} → ${a.a}`)] : []),
   '',
   g.level === 'related'
     ? `- 게이트: 관련 테스트(related) · ${resultLine} · ${Object.entries(g.related ?? {}).map(([n, r]) => `${n} ${r.mode} 테스트 ${r.tests}건`).join(' / ') || '관련 스택 없음'} — 전체 스위트·build·extra 는 ${cfg.default_branch} 배치(gate.mjs --main)`
@@ -175,14 +192,19 @@ const comment = [
       ? `- 게이트: 경량+DoD(dod) · ${resultLine} · DoD tests 항목 ${dodTestItems}건${dodTestItems ? '' : '(테스트 검사 0)'} — 테스트(관련·전체)·build·extra 는 ${cfg.default_branch} 배치(gate.mjs --main)에서 검증 예정`
       : `- 게이트: 전량(full) · ${resultLine}`,
   stackLine ? `  - 스택별: ${stackLine}` : null,
-  `- DoD: 프로브 ${probePass}/${probes.length} PASS · 사람 확인 ${humans.length}건 SKIPPED${humanPending.length ? ` (미확인 ${humanPending.join(', ')})` : ''}`,
+  `- DoD: ${dodParts}`,
+  ...humanEvidenceLines,
   `- 리뷰: 라운드 ${reviewSummary.round ?? '?'} · 델타 패스 ${reviewSummary.delta_passes} · codex ${reviewSummary.codex} · 확정 blocker ${reviewSummary.blockers_open}건`,
   timingLine,
   `- main 머지는 사람이 합니다 — 자동 머지하지 않습니다.`,
 ].filter(Boolean).join('\n');
 
 const jira = { transition: cfg.jira.done_transition, comment };
-const summary = { gate: gateSummary, review: reviewSummary, dod_human_pending: humanPending, timing };
+const summary = {
+  gate: gateSummary, review: reviewSummary, dod_human_pending: humanPending,
+  dod_human: humans.map(d => ({ id: d.id, last: d.last ?? null, evidence: d.evidence ?? null })),
+  assumptions, timing,
+};
 
 // ---------- 아카이브 경로 ----------
 const issuesDir = join(configRoot, cfg.runtime_dir, 'issues');
@@ -260,7 +282,7 @@ else {
   console.log(`  push     ${pushed ? `origin/${branch}` : '(생략 — --no-push)'}`);
   console.log(`  archive  ${archiveRel}${movedSidecars.length ? ` (+사이드카 ${movedSidecars.length})` : ''}`);
   console.log(`  gate     ${resultLine}`);
-  console.log(`  dod      프로브 ${probePass}/${probes.length} · 사람 확인 ${humans.length}건${humanPending.length ? ` (미확인 ${humanPending.join(', ')})` : ''}`);
+  console.log(`  dod      ${dodParts}`);
   console.log(`  review   r${reviewSummary.round ?? '?'} · 델타 ${reviewSummary.delta_passes} · codex ${reviewSummary.codex} · blocker ${reviewSummary.blockers_open}`);
   console.log(`  jira     ${jira.transition} 전이 + 댓글 (라우터가 MCP 로 수행)`);
   console.log(`  다음     main 머지는 사람이 — 자동 머지 금지`);

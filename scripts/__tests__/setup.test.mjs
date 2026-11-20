@@ -1,5 +1,6 @@
 // setup.mjs 통합 테스트 — 임시 git 저장소(gradle + npm 모노레포 흉내)에서 detect·write·check·upgrade·inject 를 실제로 돌린다.
 // 거부 케이스(스키마 위반 · 절대 경로 · diff 덮어쓰기 거부 · 게이트 명령 실패 주입)를 반드시 포함한다 — "존재 ≠ 실효".
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, statSync } from 'node:fs';

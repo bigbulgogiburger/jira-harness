@@ -1,4 +1,5 @@
 // herdr-lanes.mjs 실측 — herdr CLI 대역으로 pane split → agent start → 프롬프트 파일 → 제출 확인(nudge) → wait → 결과 파일 회수 순서와 함정 처리를 검사한다.
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -156,13 +157,16 @@ test('run: 기동 직후 다이얼로그 사다리 — 업데이트 안내는 Sk
   assert.ok(c3.some(x => x[0] === 'pane' && x[1] === 'read'), '진단은 pane 화면으로');
 });
 
-test('run: 결과 파일이 없으면 failed(사유에 경로) · .error.txt 가 있으면 그 내용 · start 실패도 failed', () => {
+test('run: 결과 파일이 끝내 없으면 한 번 알리고 상한(timeout_s)에서 failed(사유에 경로·시간 초과·알렸다는 사실) · .error.txt 가 있으면 그 내용 · start 실패도 failed', () => {
   const dir = makeRepo();
   const out = join(dir, 'missing.json');
-  const { env } = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
-  const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'm', kind: 'codex', prompt: 'x', out }])], env);
+  const { env, log } = inside(dir, { FAKE_HERDR_STATES: 'working,done' });
+  const r = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'm', kind: 'codex', prompt: 'x', out }], { timeout_s: 4 })], env);
   assert.equal(r.value.lanes[0].status, 'failed');
-  assert.match(r.value.lanes[0].reason, /결과 파일 없음/);
+  assert.match(r.value.lanes[0].reason, /결과 파일 없음: .*missing\.json — 레인 시간 초과 4s · 유휴라 한 번 알렸지만 결과가 오지 않았다/);
+  assert.equal(r.value.lanes[0].reminded, true);
+  const reminders = calls(log).filter(a => a[0] === 'agent' && a[1] === 'prompt' && /result file is still missing: .*missing\.json/.test(a[3]));
+  assert.equal(reminders.length, 1, '알림은 한 번만');
   writeFileSync(`${out}.error.txt.agent`, '파일 쓰기 권한 없음');
   const r2 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'm2', kind: 'codex', prompt: 'x', out }])], inside(dir, { FAKE_HERDR_STATES: 'working,done' }).env);
   assert.match(r2.value.lanes[0].reason, /레인 보고 오류: 파일 쓰기 권한 없음/);
@@ -190,13 +194,13 @@ test('run: 지난 라운드 결과는 제출 전에 .prev 로 치운다 — 새�
   rmSync(`${out}.agent`);
   writeFileSync(out, JSON.stringify(OLD));
   const b = inside(dir, { FAKE_HERDR_STATES: 'working,done', FAKE_HERDR_STATE_FILE: join(dir, 'b.count') });
-  const l2 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 's2', kind: 'claude', prompt: 'x', out }])], b.env).value.lanes[0];
+  const l2 = lanes(dir, ['run', '--spec', spec(dir, [{ name: 's2', kind: 'claude', prompt: 'x', out }], { timeout_s: 4 })], b.env).value.lanes[0];
   assert.equal(l2.status, 'failed', JSON.stringify(l2));
   assert.match(l2.reason, /결과 파일 없음/);
   assert.equal(l2.result, undefined);
 });
 
-test('run: 결과 없이 일찍 settled 돼도(제출 직후 idle) 곧바로 실패로 읽지 않는다 — 지켜보다 working 이 되면 다시 기다려 결과를 읽는다(rewaits) · 끝내 안 움직이면 failed(2026-09-23 실측: 18.4초에 "결과 파일 없음", 결과는 8분 뒤)', () => {
+test('run: 결과 없이 일찍 settled 돼도(제출 직후 idle) 곧바로 실패로 읽지 않는다 — 지켜보다 working 이 되면 다시 기다려 결과를 읽는다(rewaits) · 끝내 안 움직이면 상한에서 failed(2026-09-23 실측: 18.4초에 "결과 파일 없음", 결과는 8분 뒤)', () => {
   const dir = makeRepo();
   const out = join(dir, 'e.json');
   writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'late' }));
@@ -206,13 +210,76 @@ test('run: 결과 없이 일찍 settled 돼도(제출 직후 idle) 곧바로 실
   assert.equal(l.status, 'done', JSON.stringify(l));
   assert.equal(l.result.summary, 'late');
   assert.equal(l.rewaits, 1);
-  // 끝내 안 움직이면(idle 유지 · 결과 없음) 지켜보기 뒤 failed
+  // 끝내 안 움직이면(idle 유지 · 결과 없음) 알린 뒤 상한에서 failed
   const d2 = makeRepo();
   const b = inside(d2, { FAKE_HERDR_STATES: 'working,working,working,idle' });
-  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'e2', kind: 'claude', prompt: 'x', out: join(d2, 'e2.json') }])], b.env).value.lanes[0];
+  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'e2', kind: 'claude', prompt: 'x', out: join(d2, 'e2.json') }], { timeout_s: 4 })], b.env).value.lanes[0];
   assert.equal(l2.status, 'failed', JSON.stringify(l2));
-  assert.match(l2.reason, /결과 파일 없음/);
+  assert.match(l2.reason, /결과 파일 없음.*레인 시간 초과/);
+  assert.equal(l2.reminded, true);
   assert.equal(l2.rewaits, undefined);
+});
+
+test('run: 유휴는 끝이 아니다 — 돌려 둔 명령을 기다리느라 유휴인 레인의 결과가 지켜보는 시간(settle_grace_s)을 넘겨 와도 읽는다 · 끝났는데 안 쓴 레인은 알림을 받고 쓴다(화면에 한도 비슷한 말이 있어도 알리기 전에는 닫지 않는다)', () => {
+  // (a) 늦게 오는 결과 — 제출 뒤 내내 idle 이고, 알림이 간 뒤에야(상태 조회 9번째) 결과가 생긴다
+  const dir = makeRepo();
+  const out = join(dir, 'late.json');
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'after-grace' }));
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working,working,working,idle', FAKE_HERDR_WRITE_AT: '9' });
+  const l = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'late', kind: 'claude', prompt: 'x', out }], { timeout_s: 60 })], a.env).value.lanes[0];
+  assert.equal(l.status, 'done', JSON.stringify(l));
+  assert.equal(l.result.summary, 'after-grace');
+  assert.equal(l.reminded, true, '지켜보는 시간이 지나면 한 번 알린다');
+  assert.ok(l.seconds < 40, `상한(60s)을 채우지 않고 결과가 오면 곧 읽는다: ${l.seconds}s`);
+  // (b) 알림을 받고 쓴다 — 화면의 "rate limit" 은 한도 화면이 아니라 레인이 한 말이다
+  const d2 = makeRepo();
+  const out2 = join(d2, 'r.json');
+  writeFileSync(`${out2}.agent`, JSON.stringify({ findings: [], summary: 'on-remind' }));
+  const b = inside(d2, { FAKE_HERDR_STATES: 'working,working,working,idle', FAKE_HERDR_WRITE_ON_REMIND: '1', FAKE_HERDR_READ: 'Added the rate limit guard. Tests are running in the background.' });
+  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'r', kind: 'claude', prompt: 'x', out: out2 }], { timeout_s: 60 })], b.env).value.lanes[0];
+  assert.equal(l2.status, 'done', JSON.stringify(l2));
+  assert.equal(l2.result.summary, 'on-remind');
+  assert.equal(l2.reminded, true);
+  const reminders = calls(b.log).filter(c => c[0] === 'agent' && c[1] === 'prompt' && /result file is still missing: .*r\.json\. If your work is finished/.test(c[3]));
+  assert.equal(reminders.length, 1);
+});
+
+test('run: 상한 전에 닫는 경우 — 기다리는 도중 에이전트가 사라지면 곧바로 failed(알림을 보내지 않는다) · 알린 뒤에도 유휴이고 화면이 사용량 한도면 limit', () => {
+  // (a) 사라짐 — 죽은 pane 에 보낸 글은 셸 명령이 되므로 알림도 보내지 않는다
+  const dir = makeRepo();
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working,working,working,idle,gone', FAKE_HERDR_READ: 'PS C:\\> ' });
+  const l = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'g', kind: 'claude', prompt: 'x', out: join(dir, 'g.json') }], { timeout_s: 120 })], a.env).value.lanes[0];
+  assert.equal(l.status, 'failed', JSON.stringify(l));
+  assert.match(l.reason, /결과 파일 없음.*에이전트가 사라졌다/);
+  assert.equal(l.reminded, undefined);
+  assert.ok(l.seconds < 60, `상한(120s)까지 기다리지 않는다: ${l.seconds}s`);
+  assert.ok(!calls(a.log).some(c => c[0] === 'agent' && c[1] === 'prompt' && /still missing/.test(c[3])), '사라진 에이전트에 알림을 보내지 않는다');
+  // (b) 사용량 한도 화면 — 알린 뒤에도 유휴면 한도로 닫는다
+  const d2 = makeRepo();
+  const b = inside(d2, { FAKE_HERDR_STATES: 'working,working,working,idle', FAKE_HERDR_READ: 'You have hit your usage limit. Try again at 3pm.' });
+  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'u', kind: 'claude', prompt: 'x', out: join(d2, 'u.json') }], { timeout_s: 120 })], b.env).value.lanes[0];
+  assert.equal(l2.status, 'limit', JSON.stringify(l2));
+  assert.match(l2.reason, /사용량 한도 화면에서 멈췄다/);
+  assert.equal(l2.reminded, true);
+  assert.ok(l2.seconds < 60, `상한(120s)까지 기다리지 않는다: ${l2.seconds}s`);
+});
+
+test('run: 상한까지 일하는 레인(agent wait 시간 초과) — 결과가 와 있으면 읽고 · 없으면 「레인 시간 초과」', () => {
+  // (a) 결과를 쓰고도 턴이 끝나지 않은 채 상한에 걸렸다(같은 상한을 나눠 쓰는 뒤쪽 레인에서 흔하다) — 결과 파일이 끝의 신호다
+  const dir = makeRepo();
+  const out = join(dir, 'w.json');
+  writeFileSync(`${out}.agent`, JSON.stringify({ findings: [], summary: 'written-while-working' }));
+  const a = inside(dir, { FAKE_HERDR_STATES: 'working', FAKE_HERDR_WAIT_TIMEOUT: '1' });
+  const l = lanes(dir, ['run', '--spec', spec(dir, [{ name: 'w', kind: 'claude', prompt: 'x', out }], { timeout_s: 5 })], a.env).value.lanes[0];
+  assert.equal(l.status, 'done', JSON.stringify(l));
+  assert.equal(l.result.summary, 'written-while-working');
+  // (b) 결과 없이 상한까지 일했다
+  const d2 = makeRepo();
+  const b = inside(d2, { FAKE_HERDR_STATES: 'working', FAKE_HERDR_WAIT_TIMEOUT: '1' });
+  const l2 = lanes(d2, ['run', '--spec', spec(d2, [{ name: 'w2', kind: 'claude', prompt: 'x', out: join(d2, 'w2.json') }], { timeout_s: 5 })], b.env).value.lanes[0];
+  assert.equal(l2.status, 'failed', JSON.stringify(l2));
+  assert.equal(l2.reason, '레인 시간 초과 5s');
+  assert.equal(l2.reminded, undefined, '일하는 레인에는 알리지 않는다');
 });
 
 test('verify: herdr.lanes=off 면 실행 없이 ok:false · plan 은 kinds 만큼 레인 spec(프롬프트에 diff-ref·파일·규약) · verify 는 findings 를 verify.js 모양으로 합치고 lanes_reason 을 낸다', () => {
@@ -228,7 +295,8 @@ test('verify: herdr.lanes=off 면 실행 없이 ok:false · plan 은 kinds 만�
   assert.match(plan.value.lanes[0].prompt, /backend\/App\.java/);
   assert.match(plan.value.lanes[0].prompt, /보안/);
   assert.match(plan.value.lanes[0].out, /feat-ABC-5\.herdr-codex\.json$/);
-  // 실행 — codex 레인은 제출 뒤 결과를 쓰고(대역 .agent), grok 레인은 결과 없음(failed) → ok:true(1개 완주) · failed 에 grok
+  // 실행 — codex 레인은 제출 뒤 결과를 쓰고(대역 .agent), grok 레인은 결과 없음(failed) → ok:true(1개 완주) · failed 에 grok.
+  // 리뷰 레인은 알린 뒤에도 유휴가 이어지면 lane_timeout_s 를 기다리지 않고 닫는다(지켜보는 시간의 4배 — 여기서는 settle_grace_s 1 → 4초)
   const outCodex = join(dir, '.claude/runtime/issues/feat-ABC-5.herdr-codex.json');
   mkdirSync(dirname(outCodex), { recursive: true });
   writeFileSync(`${outCodex}.agent`, JSON.stringify({ findings: [{ severity: 'blocker', file: 'backend\\App.java', line: '3', claim: 'NPE', evidence: 'x', axis: '정확성' }], summary: '1건' }));
@@ -241,7 +309,7 @@ test('verify: herdr.lanes=off 면 실행 없이 ok:false · plan 은 kinds 만�
   assert.equal(v.value.blockers, 1);
   assert.match(v.value.lanes_reason, /herdr lanes: codex\+grok/);
   assert.equal(v.value.failed.length, 1);
-  assert.match(v.value.failed[0], /^review-grok/);
+  assert.match(v.value.failed[0], /^review-grok: 결과 파일 없음: .* — 알린 뒤에도 4s 넘게 유휴였다$/);
   const c = calls(log);
   assert.ok(c.some(a => a[0] === 'notification' && /blocker 1/.test(a[2])), 'blocker 토스트');
   assert.equal(c.filter(a => a[1] === 'start').length, 2);

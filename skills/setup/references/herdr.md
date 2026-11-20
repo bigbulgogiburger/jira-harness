@@ -49,7 +49,7 @@ rows = [["state_icon", "workspace", "branch", "$case"]]
 | 리뷰 blocker 확정 | `issue-set --review` | request |
 | 훅이 commit/push 거부 | `commit-gate.mjs`(deny 경로) | request |
 | complete 성공 / 거부 | `issue-complete.mjs` | done / request |
-| **계획 승인 대기** · **사람 확인 DoD** | 라우터가 `herdr-report.mjs --notify "<KEY> 계획 승인 대기" --sound request`(stages.md) | request |
+| **계획 승인 대기** · **사람 확인 DoD** | 라우터가 `herdr-report.mjs --notify "<KEY> 계획 승인 대기" --sound request`(stages-front.md §plan) | request |
 
 무인 pane(`--unattended`) 에서 이 알림이 곧 "사람이 봐야 할 순간" 목록이다. 끄려면 `harness.json.herdr.notify=false`(토큰은 유지) 또는 `herdr.enabled=false`(전부).
 
@@ -94,7 +94,7 @@ Workflow 서브에이전트 대신 **Herdr pane 의 다른 에이전트**(codex�
 | reviewer | `review.codex_via: "herdr"` | Codex 판정을 `codex exec` 대신 상주 codex pane 으로. 있으면 재사용, 없으면 띄움. 컨텍스트는 `herdr.reviewer_context`(issue/always/never) |
 | runner | 항상(Herdr 안이면) | 게이트를 runner pane 에서 — `herdr-lanes.mjs gate --full [--no-wait]`. 로그가 driver 컨텍스트 밖에 남는다 |
 | lane | `herdr.lanes: "verify"` / `"all"` | 추가 심판(grok 등) 리뷰 레인 |
-| implement | `herdr.lanes: "implement"` / `"all"` | 구현 레인 — 레인마다 `lane/<slug>/<name>` worktree 를 파고 kind(plan 이 고른 것, 없으면 `kinds.implement` 풀 순서)로 pane 을 띄운다. 기본 배치 `lane_placement: "split"` 은 worktree 를 `<runtime>/herdr/worktrees/` 에 git 으로 파고 pane 을 **driver 옆에** 쪼갠다(새 워크스페이스 없음 · `"workspace"` 면 `herdr worktree create`). 끝나면 driver 가 diff 를 패치로 회수해 메인에 적용한다. 레인은 커밋하지 않는다 |
+| implement | `herdr.lanes: "implement"` / `"all"` | 구현 레인 — **이슈 여러 건(다중 키·하위이슈)을 한 번에 처리할 때** 이슈마다 레인 하나를 pane 으로 동시에 돌린다(이슈 1건은 드라이버가 직접 구현한다 · 켜지 않은 프로젝트는 같은 레인들을 한 작업트리의 워크플로 에이전트로 돌린다). 켜면 plan 이 레인을 2개 이상 냈을 때 레인마다 `lane/<slug>/<name>` worktree 를 파고 kind(plan 이 고른 것, 없으면 `kinds.implement` 풀 순서)로 pane 을 띄운다. 기본 배치 `lane_placement: "split"` 은 worktree 를 `<runtime>/herdr/worktrees/` 에 git 으로 파고 pane 을 **driver 옆에** 쪼갠다(새 워크스페이스 없음 · `"workspace"` 면 `herdr worktree create`). 끝나면 driver 가 diff 를 패치로 회수해 메인에 적용한다. 레인은 커밋하지 않는다 |
 
 driver(Claude) 는 판단·결정·훅만 갖고, 긴 출력은 전부 pane 과 파일로 나간다. codex·grok 은 조언자이거나 자기 worktree 의 구현자다 — 커밋은 driver 의 훅·safe-commit 만 통과한다.
 
@@ -117,7 +117,7 @@ driver(Claude) 는 판단·결정·훅만 갖고, 긴 출력은 전부 pane 과 
   "auto_trust": true,                               // codex "이 디렉터리를 신뢰합니까" 에 자동 Yes(레인 cwd 는 이 프로젝트 자신의 worktree) · false 면 blocked 보고
   "worktree_copy": [".claude/harness.env.local"],   // 새 worktree 로 복사할 gitignore 파일
   "worktree_init": [],                              // 새 worktree 에서 돌릴 초기화 명령(예 "npm ci")
-  "lane_timeout_s": 900,
+  "lane_timeout_s": 900,                            // 레인 결과를 기다리는 상한(초). 구현 레인은 이 값과 3600 중 큰 값을 쓴다
   "close_panes": false
 }
 ```

@@ -1,5 +1,6 @@
 // A6 통합 테스트 — 실제 임시 git 저장소 + bare origin 에서 issue-complete.mjs 를 돌린다.
 // 통과 경로만이 아니라 **거부 경로마다 위반을 주입**해 그 코드가 실제로 발화하는지 본다(존재 ≠ 실효).
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -158,6 +159,15 @@ test('(d) 전부 갖추고 --dry-run → exit 0 · 파일 불변 · push 없음'
   assert.equal(readFileSync(stateFile(dir), 'utf8'), before, 'dry-run 은 상태 JSON 을 건드리지 않는다');
   assert.ok(!existsSync(archiveDir(dir)), 'dry-run 은 archive 디렉토리도 만들지 않는다');
   assert.equal(sh('git', ['rev-parse', '--verify', '-q', 'refs/heads/feat/ABC-1'], bare).status, 1, 'dry-run 은 push 하지 않는다');
+
+  // 대기열에서 기다린 게이트 — 돈 시간과 기다린 시간이 댓글에 따로 보인다. 줄을 서지 않았으면 대기 문구가 없다
+  assert.ok(!j.jira.comment.includes('대기'), j.jira.comment);
+  assert.equal(j.summary.timing.gate_queue_wait_s, null);
+  const st = readState(stateFile(dir)); st.gate.queue_wait_s = 754; writeState(stateFile(dir), st);
+  const w = out(complete(dir, '--dry-run'));
+  assert.match(w.jira.comment, /전량 게이트 [\dhms. ]+ \+ 대기 13m\)/, w.jira.comment);
+  assert.equal(w.summary.timing.gate_queue_wait_s, 754);
+  assert.equal(w.summary.gate.queue_wait_s, 754);
 });
 
 test('(e) 실행 → origin 브랜치 · archive 파일 · 원래 상태 파일 삭제 · code OK · jira.comment 에 브랜치명', () => {
@@ -192,7 +202,7 @@ test('(e) 실행 → origin 브랜치 · archive 파일 · 원래 상태 파일 
   assert.equal(j.jira.transition, 'QA');
   assert.ok(j.jira.comment.includes('feat/ABC-1'), j.jira.comment);
   assert.ok(j.jira.comment.includes('be(') && j.jira.comment.includes('fe('), `스택별 분모: ${j.jira.comment}`);
-  assert.ok(j.jira.comment.includes('프로브 1/1 PASS') && j.jira.comment.includes('사람 확인 1건 SKIPPED'), j.jira.comment);
+  assert.ok(j.jira.comment.includes('- DoD: 프로브 1/1 PASS · 사람 확인 0/1 확인(미확인 D2)'), j.jira.comment);
   assert.ok(j.jira.comment.includes('라운드 2') && j.jira.comment.includes('델타 패스 1') && j.jira.comment.includes('ok(120s)'), j.jira.comment);
   assert.ok(j.jira.comment.includes('main 머지는 사람이'), j.jira.comment);
   assert.ok(j.jira.comment.includes('- 소요: 총'), `소요 시간 줄이 댓글에 남는다: ${j.jira.comment}`);

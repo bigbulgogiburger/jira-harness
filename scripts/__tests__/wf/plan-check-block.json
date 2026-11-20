@@ -1,0 +1,11 @@
+{
+  "plan-check": {
+    "verdict": "PASS",
+    "blockers": [
+      { "what": "내보내기 경로가 같은 요금 값을 따로 계산한다", "why": "화면만 고치면 내보낸 파일의 금액이 계속 틀린다", "where": "backend/src/ReportExporter.java:buildRow" },
+      { "what": "", "why": "빈 항목은 버린다", "where": "" }
+    ],
+    "notes": [],
+    "looked": ["backend/src/ReportExporter.java"]
+  }
+}

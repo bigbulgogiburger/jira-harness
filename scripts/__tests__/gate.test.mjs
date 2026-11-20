@@ -1,4 +1,5 @@
 // S2 통합 테스트 — 실제 임시 git 저장소에서 훅(commit-gate.mjs)과 러너(gate.mjs)를 실행한다.
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, utimesSync, existsSync } from 'node:fs';
@@ -469,6 +470,415 @@ test('DoD tests 전량: 스택 test 명령이 dod_tests.run 과 같으면 그 �
   assert.match(log, /dod D3 \[fe 전량 test 리포트\] .* → PASS/);
 });
 
+test('관련 테스트 게이트: 고른 테스트만 돈 리포트로 DoD 항목을 판정하지 않는다(항목의 선택 중 돌지 않은 테스트가 실패해도 PASS 가 되던 길) — 항목은 배치로 돈다 · 스택 전체를 돈 리포트는 그대로 읽고 다시 돌리지 않는다', () => {
+  const dir = dodTestsRepo({
+    full: true,
+    suites: [{ name: 'com.x.FooTest', tests: 2 }, { name: 'com.x.BarTest', tests: 2, failures: 1 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }],
+  });
+  const d1 = { id: 'D1', text: 'Foo 와 Bar 둘 다', tests: { stack: 'be', select: ['*FooTest*', '*BarTest*'] }, last: 'PENDING' };
+  setDod(dir, [d1]);
+  // 이 브랜치는 FooTest 만 고쳤다 → 관련 테스트로 고르는 것은 FooTest 하나다. BarTest(실패 중)는 관련 테스트 단계에서 돌지 않는다
+  mkdirSync(join(dir, 'backend/src/test/java/com/x'), { recursive: true });
+  edit(dir, 'backend/src/test/java/com/x/FooTest.java', 'class FooTest {}\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'foo');
+  let r = gate(dir, '--related', '--json');
+  assert.equal(r.status, 1, `BarTest 가 실패 중이면 D1 은 FAIL 이어야 한다(FooTest 의 통과 2건만 보고 PASS 로 넘기면 안 된다): ${r.stdout}`);
+  let s = readState(stateFile(dir));
+  assert.equal(s.gate.results.test, 'PASS', '관련 테스트 단계(FooTest)는 통과했다');
+  assert.equal(s.gate.results.dod, 'FAIL');
+  assert.deepEqual([s.gate.related.be.mode, s.gate.related.be.selected, s.gate.related.be.tests], ['selected', 1, 2], '「관련 테스트 N건」은 종전대로 그 리포트에서 센다');
+  assert.deepEqual(runnerCalls(dir, 'backend'), [['gradle', '--tests', 'com.x.FooTest'], ['gradle', '--tests', '*FooTest*', '--tests', '*BarTest*']], '관련 테스트 1번 + DoD 배치 1번(항목의 선택 전부)');
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*실패 1건: com\.x\.BarTest/);
+
+  // 고친 뒤 — 통과 건수도 항목의 선택 전부(4건)에서 센다. 관련 테스트의 2건으로 세면 하한 4 에 모자라 거짓 FAIL 이다
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FooTest', tests: 2 }, { name: 'com.x.BarTest', tests: 2 }] });
+  setDod(dir, [{ ...d1, expect: { min_tests: 4 } }]);
+  r = gate(dir, '--related', '--json');
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  s = readState(stateFile(dir));
+  assert.equal(s.dod[0].last, 'PASS');
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*통과 4 /);
+
+  // 전역 파일이 바뀌면 관련 테스트가 그 스택 전체로 넘어간다 — 그 리포트는 전부를 돈 것이라 DoD 판정에 그대로 쓰고 배치를 또 띄우지 않는다
+  edit(dir, 'backend/build.gradle', '// deps\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'gradle');
+  const before = runnerCalls(dir, 'backend').length;
+  r = gate(dir, '--related', '--json');
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  s = readState(stateFile(dir));
+  assert.equal(s.gate.related.be.mode, 'full');
+  assert.deepEqual(runnerCalls(dir, 'backend').slice(before), [['gradle']], '스택 전체 1번뿐 — DoD 배치 없음');
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 전량 test 리포트\] .* → PASS/);
+});
+
+test('관련 테스트 뒤의 DoD 배치가 리포트를 쓰지 못하고 죽으면 항목은 FAIL 이다 — 관련 테스트 단계가 같은 폴더에 방금 쓴 XML(통과)을 이번 판정으로 읽지 않는다', () => {
+  const dir = dodTestsRepo({
+    full: true,
+    suites: [{ name: 'com.x.FooTest', tests: 2 }, { name: 'com.x.BarTest', tests: 2 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }],
+  });
+  // *BarTest* 가 선택에 든 호출(DoD 배치)만 리포트를 쓰기 전에 죽는다. 관련 테스트 단계가 쓴 XML 의 mtime 은 배치 시작 시각보다 뒤로 찍힌다 —
+  // 「시작 시각 이후에 쓰인 것」으로는 이번 실행의 리포트와 구분되지 않는 상태다(부하가 없으면 실제로도 1초 안에 이어 돈다)
+  setRunner(dir, 'backend', { crash_on: '*BarTest*', mtime_skew_ms: 600_000 });
+  setDod(dir, [{ id: 'D1', text: 'Foo 와 Bar 둘 다', tests: { stack: 'be', select: ['*FooTest*', '*BarTest*'] }, last: 'PENDING' }]);
+  mkdirSync(join(dir, 'backend/src/test/java/com/x'), { recursive: true });
+  edit(dir, 'backend/src/test/java/com/x/FooTest.java', 'class FooTest {}\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'foo');
+  const r = gate(dir, '--related', '--json');
+  assert.equal(r.status, 1, `배치가 죽었는데 통과로 끝났다(BarTest 는 한 번도 돌지 않았다): ${r.stdout}`);
+  const s = readState(stateFile(dir));
+  assert.equal(s.gate.results.test, 'PASS', '관련 테스트 단계(FooTest)는 통과했다');
+  assert.equal(s.dod[0].last, 'FAIL');
+  assert.deepEqual(runnerCalls(dir, 'backend'), [['gradle', '--tests', 'com.x.FooTest'], ['gradle', '--tests', '*FooTest*', '--tests', '*BarTest*']]);
+  assert.match(readFileSync(join(dir, s.gate.log), 'utf8'), /dod D1 \[be 배치\].*배치 exit 1 — 이번 실행 결과 없음/);
+});
+
+test('--try 를 잇달아 부를 때 — 뒤 실행의 배치가 리포트를 쓰지 못하고 죽으면 앞 실행이 남긴 XML(통과)로 판정하지 않는다 · 「항목판정」 명령은 공백이 든 id 를 따옴표로 감싼다', () => {
+  const dir = dodTestsRepo({
+    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }],
+  });
+  setRunner(dir, 'backend', { crash_on: '*OrderTest*', mtime_skew_ms: 600_000 });
+  setDod(dir, [
+    { id: 'D1', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'smoke web', text: '주문(공백이 든 id)', tests: { stack: 'be', select: ['*OrderTest*'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+  ]);
+  const tryJson = (...a) => { const r = gate(dir, '--try', '--json', ...a); return { r, j: r.stdout.trim().startsWith('{') ? JSON.parse(r.stdout) : null }; };
+  // 앞 실행: D1 만 — 통과하고 FeeTest 의 XML 을 남긴다
+  let { r, j } = tryJson('--ids', 'D1');
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(j.items.map(o => [o.id, o.verdict]), [['D1', 'PASS']]);
+  // 뒤 실행: 두 항목을 한 번에 — 러너가 리포트를 쓰기 전에 죽는다. 남아 있는 FeeTest XML 은 앞 실행의 것이다
+  ({ r, j } = tryJson());
+  assert.equal(r.status, 1, r.stdout);
+  assert.deepEqual(j.items.map(o => [o.id, o.verdict]), [['D1', 'FAIL'], ['smoke web', 'FAIL']], '앞 실행의 통과를 이번 판정으로 읽지 않는다');
+  assert.match(j.items[0].reasons.join(' '), /이번 실행 결과 없음/);
+  // 통과하지 못한 항목을 다시 재는 명령 — 그대로 붙여 넣어도 같은 항목을 가리키게 공백이 든 id 는 따옴표로 감싼다
+  assert.match(j.rerun_items, /--try --ids 'D1,smoke web' --cwd "/);
+  ({ r, j } = tryJson('--ids', 'smoke web'));
+  assert.deepEqual(j?.items.map(o => o.id), ['smoke web'], `공백이 든 id 도 한 인자로 오면 그 항목을 고른다: ${r.stderr}`);
+});
+
+test('--try: 구현 중 확인 — DoD tests 를 스택마다 한 번에 돌려 항목별로 판정하되 상태·판정을 기록하지 않는다(로그만 남긴다) · 프로브는 --ids 로 지목했을 때만 · 실패하면 그것만 다시 도는 명령을 낸다 · 잘못된 지목은 exit 2', () => {
+  const dir = dodTestsRepo({
+    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.OtherTest', tests: 9 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
+  });
+  setDod(dir, [
+    { id: 'D1', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'D2', text: '주문', tests: { stack: 'be', select: ['*OrderTest*'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+    { id: 'D3', text: '화면 a', tests: { stack: 'fe', select: ['src/a'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+    { id: 'D4', text: 'sentinel', probe: 'echo INJECTION_FIRED > probe-ran.txt && echo INJECTION_FIRED', cwd: 'backend', expect: { pattern: 'INJECTION_FIRED' }, last: 'PENDING' },
+    { id: 'D5', text: '사람 확인', human: true, last: 'PENDING' },
+  ]);
+  const before = readFileSync(stateFile(dir), 'utf8');
+  const unchanged = why => assert.equal(readFileSync(stateFile(dir), 'utf8'), before, why);
+  const tryJson = (...a) => { const r = gate(dir, '--try', '--json', ...a); return { r, j: r.stdout.trim().startsWith('{') ? JSON.parse(r.stdout) : null }; };
+
+  // ⓪ --dry-run — 무엇을 어떻게 묶어 돌릴지만 보여주고 러너를 띄우지 않는다
+  const dry = tryJson('--dry-run');
+  assert.equal(dry.r.status, 0, dry.r.stderr);
+  assert.deepEqual(Object.fromEntries(Object.entries(dry.j.batches).map(([n, b]) => [n, b.ids])), { be: ['D1', 'D2'], fe: ['D3'] });
+  assert.match(dry.j.batches.be.cmd, /gradle --tests '\*FeeTest\*' --tests '\*OrderTest\*'$/);
+  assert.deepEqual(dry.j.probes, [], '지목하지 않은 프로브는 계획에도 없다');
+  assert.ok(!existsSync(join(dir, 'backend/.fake-runner.log')), 'dry-run 은 러너를 띄우지 않는다');
+
+  // ① 전부 — 스택마다 러너 한 번, 항목마다 판정, 프로브·사람 항목은 돌지 않는다
+  let { r, j } = tryJson();
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(j.level, 'try'); assert.equal(j.overall, 'PASS'); assert.equal(j.recorded, false);
+  assert.deepEqual(j.items.map(o => [o.id, o.verdict, o.passed]), [['D1', 'PASS', 3], ['D2', 'PASS', 2], ['D3', 'PASS', 2]]);
+  assert.deepEqual(runnerCalls(dir, 'backend'), [['gradle', '--tests', '*FeeTest*', '--tests', '*OrderTest*']], 'be 러너는 한 번 — 선택 합집합');
+  assert.equal(runnerCalls(dir, 'frontend').length, 1, 'fe 러너도 한 번');
+  assert.ok(!existsSync(join(dir, 'backend/probe-ran.txt')), '프로브는 지목하지 않으면 돌지 않는다');
+  unchanged('상태 JSON 은 한 글자도 안 바뀐다(gate 기록 · DoD 판정 · history 없음)');
+  assert.equal(readState(stateFile(dir)).gate, null);
+  assert.equal(g(dir, 'for-each-ref', 'refs/harness'), '', '게이트 ref 를 박지 않는다');
+  const gateDir = join(dir, '.claude/runtime/gate');
+  assert.deepEqual(readdirSync(gateDir).filter(f => f.endsWith('.vitest.json')), [], '리포트 파일은 읽고 지운다');
+  assert.ok(existsSync(join(dir, j.log)) && /-try-/.test(j.log), `로그는 남긴다: ${j.log}`);
+  // 훅은 이 결과를 게이트로 보지 않는다
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  assert.ok(hook(dir, 'git commit -m x').reason.includes('NO_GATE'), '--try 가 초록이어도 커밋 게이트는 따로 돌아야 한다');
+
+  // ② --ids — 그 항목만. 프로브도 지목하면 돈다
+  ({ r, j } = tryJson('--ids', 'D4,D1'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(j.items.map(o => [o.id, o.verdict]), [['D4', 'PASS'], ['D1', 'PASS']]);
+  assert.ok(existsSync(join(dir, 'backend/probe-ran.txt')), '지목한 프로브는 돈다');
+  assert.deepEqual(runnerCalls(dir, 'backend').at(-1), ['gradle', '--tests', '*FeeTest*'], '지목한 항목의 선택만');
+  assert.equal(runnerCalls(dir, 'frontend').length, 1, '지목하지 않은 스택은 띄우지 않는다');
+
+  // ③ 실패 — 그 항목만 FAIL · 실패한 스위트 이름과 그것만 다시 도는 명령
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1 }, { name: 'com.x.OrderTest', tests: 2 }] });
+  ({ r, j } = tryJson());
+  assert.equal(r.status, 1);
+  assert.deepEqual(j.items.map(o => [o.id, o.verdict]), [['D1', 'FAIL'], ['D2', 'PASS'], ['D3', 'PASS']]);
+  assert.deepEqual(j.failed_tests.be.names, ['com.x.FeeTest']);
+  assert.match(j.rerun[0], /gate\.mjs" --try --stack be --select 'com\.x\.FeeTest' --cwd "/);
+  assert.match(j.rerun_items, /gate\.mjs" --try --ids D1 --cwd "/, '통과하지 못한 항목을 항목째 다시 재는 명령');
+  const plain = gate(dir, '--try');
+  assert.equal(plain.status, 1);
+  assert.match(plain.stdout, /try FAIL .* 항목 2\/3 — 상태·판정을 기록하지 않는다\(로그만 남긴다/);
+  assert.match(plain.stdout, /FAIL D1 \[be\] 통과 2 · 실패 1 — 실패 1건: com\.x\.FeeTest/);
+  assert.match(plain.stdout, /다시 {5}node ".*gate\.mjs" --try --stack be --select 'com\.x\.FeeTest'/);
+  assert.match(plain.stdout, /항목판정 node ".*gate\.mjs" --try --ids D1 /);
+
+  // ④ 실패한 것만 다시 — 상태와 무관한 선택 실행
+  ({ r, j } = tryJson('--stack', 'be', '--select', 'com.x.FeeTest'));
+  assert.equal(r.status, 1, '아직 고치지 않았다');
+  assert.deepEqual(runnerCalls(dir, 'backend').at(-1), ['gradle', '--tests', 'com.x.FeeTest']);
+  assert.equal(j.rerun_items, undefined, '상태와 무관한 선택 실행에는 다시 잴 항목이 없다');
+  setRunner(dir, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }] });
+  ({ r, j } = tryJson('--stack', 'be', '--select', 'com.x.FeeTest', '--select', '*OrderTest*'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(j.items.map(o => [o.verdict, o.passed]), [['PASS', 5]]);
+  assert.equal(tryJson('--stack', 'be', '--select', '*MissingTest*').r.status, 1, '어디에도 안 걸리는 선택은 초록이 아니다(분모 0)');
+
+  // ④-2 실패한 테스트는 없는데 통과 건수가 하한에 못 미친다 — 「다시」(실패한 스위트만)는 낼 것이 없지만 항목째 다시 재는 명령은 나온다.
+  //      실패한 것만 다시 돌아 초록을 봐도 항목은 여전히 FAIL 일 수 있다 — 그 차이를 이 줄이 메운다
+  const raw5 = readFileSync(stateFile(dir), 'utf8'); // 끝에서 글자 그대로 되돌린다(이 테스트는 상태 JSON 이 한 글자도 안 바뀌는지를 끝까지 본다)
+  const st5 = JSON.parse(raw5);
+  writeState(stateFile(dir), { ...st5, dod: st5.dod.map(d => (d.id === 'D2' ? { ...d, expect: { min_tests: 9 } } : d)) });
+  ({ r, j } = tryJson());
+  assert.equal(r.status, 1);
+  assert.deepEqual(j.items.filter(o => o.verdict === 'FAIL').map(o => [o.id, o.reasons[0]]), [['D2', '통과 2건 < 9']]);
+  assert.equal(j.rerun, undefined, '실패한 스위트가 없다');
+  assert.match(j.rerun_items, /--try --ids D2 --cwd "/);
+  writeFileSync(stateFile(dir), raw5);
+
+  // ⑤ 잘못된 지목 — 돌리지 않고 exit 2
+  const calls = runnerCalls(dir, 'backend').length;
+  for (const [a, re] of [
+    [['--ids', 'D9'], /D9 가 자동 DoD 항목에 없다/],
+    [['--ids', 'D5'], /D5 가 자동 DoD 항목에 없다/],
+    [['--lane', 'nope'], /레인 "nope" 이 상태 JSON 에 없다/],
+    [['--stack', 'nope', '--select', 'x'], /알 수 없는 스택 "nope"/],
+    [['--stack', 'be'], /--stack <스택> 과 --select <패턴> 은 함께 쓴다/],
+    [['--stack', 'be', '--select', 'x', '--ids', 'D1'], /--ids·--lane 과 함께 쓰지 않는다/],
+  ]) {
+    const x = gate(dir, '--try', ...a);
+    assert.equal(x.status, 2, `${a.join(' ')}: ${x.stderr}`);
+    assert.match(x.stderr, re);
+  }
+  assert.equal(runnerCalls(dir, 'backend').length, calls, '잘못된 지목은 러너를 띄우지 않는다');
+  unchanged('끝까지 상태 JSON 은 그대로다');
+});
+
+test('--try 레인: 구현 레인의 작업트리(lane/<slug>/<이름> 브랜치)에서 --slug 로 이슈를 찾고 --lane 의 DoD 만 **그 트리에서** 돈다 · 레인끼리 리포트 파일이 겹치지 않는다 · dod 가 없는 레인은 선택 실행으로 안내한다', () => {
+  const dir = dodTestsRepo({
+    suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2 }, { name: 'src/b/z.spec.js', passed: 5 }],
+  });
+  const st = readState(stateFile(dir));
+  st.dod = [
+    { id: 'D1', text: '[ABC-1] 수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PENDING' },
+    { id: 'D2', text: '[ABC-2] 주문', tests: { stack: 'be', select: ['*OrderTest*'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+    { id: 'D3', text: '[ABC-2] 화면 a', tests: { stack: 'fe', select: ['src/a'] }, expect: { min_tests: 2 }, last: 'PENDING' },
+    { id: 'D4', text: '[ABC-2] 위반 주입', probe: 'echo INJECTION_FIRED > probe-ran.txt', cwd: 'backend', expect: { pattern: 'x' }, last: 'PENDING' },
+  ];
+  st.lanes = [
+    { name: 'abc-1', key: 'ABC-1', model: 'opus', files: ['backend/fee/**'], worktree: true, dod: ['D1'] },
+    { name: 'abc-2', key: 'ABC-2', model: 'opus', files: ['backend/order/**', 'frontend/**'], worktree: true, dod: ['D2', { id: 'D3' }, 'D4'] },
+    { name: 'abc-3', model: 'sonnet', files: ['docs/**'], worktree: true },
+  ];
+  writeState(stateFile(dir), st);
+  const before = readFileSync(stateFile(dir), 'utf8');
+  const base = dir.split(/[\\/]/).pop();
+  const wt1 = join(dirname(dir), `${base}-lane1`), wt2 = join(dirname(dir), `${base}-lane2`);
+  g(dir, 'worktree', 'add', '-q', '-b', 'lane/feat-ABC-1/abc-1', wt1);
+  g(dir, 'worktree', 'add', '-q', '-b', 'lane/feat-ABC-1/abc-2', wt2);
+
+  // 이슈 브랜치가 아닌 트리 — --slug 없이는 어느 이슈인지 모른다
+  const noSlug = gate(wt1, '--try', '--lane', 'abc-1');
+  assert.equal(noSlug.status, 2); assert.match(noSlug.stderr, /이슈 브랜치가 아니다 — --slug <slug>/);
+
+  const r1 = gate(wt1, '--try', '--slug', 'feat-ABC-1', '--lane', 'abc-1', '--json');
+  assert.equal(r1.status, 0, r1.stderr);
+  const j1 = JSON.parse(r1.stdout);
+  assert.deepEqual(j1.items.map(o => [o.id, o.verdict]), [['D1', 'PASS']]);
+  assert.deepEqual(runnerCalls(wt1, 'backend'), [['gradle', '--tests', '*FeeTest*']], '레인의 DoD 만');
+  assert.ok(!existsSync(join(wt1, 'frontend/.fake-runner.log')), '그 레인에 fe 항목이 없으면 fe 러너를 띄우지 않는다');
+  assert.ok(!existsSync(join(dir, 'backend/.fake-runner.log')), '테스트는 레인의 작업트리에서 돈다 — 메인 트리가 아니다');
+  assert.ok(existsSync(join(dir, j1.log)), '로그는 메인 저장소 runtime 에 남는다');
+
+  // 다른 레인 — 프로브(위반 주입)는 레인의 dod 에 있어도 지목하지 않으면 돌지 않는다(합친 뒤 게이트가 한 번 돈다)
+  const r2 = gate(wt2, '--try', '--slug', 'feat-ABC-1', '--lane', 'abc-2', '--json');
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.deepEqual(JSON.parse(r2.stdout).items.map(o => [o.id, o.verdict]), [['D2', 'PASS'], ['D3', 'PASS']]);
+  assert.deepEqual(runnerCalls(wt2, 'backend'), [['gradle', '--tests', '*OrderTest*']]);
+  const feCall = runnerCalls(wt2, 'frontend')[0];
+  // 리포트 파일 이름에 **그 실행의** pid 가 들어간다 — 동시에 도는 레인(서로 다른 프로세스)끼리 같은 파일을 쓰지 않는다. 숫자이기만 한지 보면 고정 숫자여도 통과한다
+  assert.ok(Number.isInteger(r2.pid) && r2.pid > 0);
+  assert.ok(feCall.find(a => a.startsWith('--outputFile.json=')).endsWith(`feat-ABC-1-fe-try-${r2.pid}.vitest.json`), `리포트 경로에 이 실행의 pid(${r2.pid})가 없다: ${feCall.join(' ')}`);
+  assert.ok(!existsSync(join(wt2, 'backend/probe-ran.txt')));
+  // 레인의 작업트리에서 실패하면 — 항목째 다시 재는 명령이 --slug 를 그대로 싣는다(이슈 브랜치가 아닌 트리라 없으면 어느 이슈인지 모른다)
+  setRunner(wt2, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2, failures: 1 }] });
+  const r2f = gate(wt2, '--try', '--slug', 'feat-ABC-1', '--lane', 'abc-2', '--json');
+  assert.equal(r2f.status, 1);
+  assert.match(JSON.parse(r2f.stdout).rerun_items, /--try --slug feat-ABC-1 --ids D2 --cwd "/);
+  setRunner(wt2, 'backend', { suites: [{ name: 'com.x.FeeTest', tests: 3 }, { name: 'com.x.OrderTest', tests: 2 }] });
+  // 남의 레인 항목을 --ids 로 지목하면 거절
+  const cross = gate(wt1, '--try', '--slug', 'feat-ABC-1', '--lane', 'abc-1', '--ids', 'D2');
+  assert.equal(cross.status, 2); assert.match(cross.stderr, /D2 가 레인 "abc-1" 의 자동 DoD 항목에 없다/);
+
+  // dod 가 없는 레인 — 선택 실행으로 안내하고, 선택 실행은 --slug 없이도 돈다
+  const noDod = gate(wt1, '--try', '--slug', 'feat-ABC-1', '--lane', 'abc-3');
+  assert.equal(noDod.status, 2); assert.match(noDod.stderr, /레인 "abc-3" 에 dod 가 없다.*--stack <스택> --select <패턴>/);
+  const adhoc = gate(wt1, '--try', '--stack', 'fe', '--select', 'src/b', '--json');
+  assert.equal(adhoc.status, 0, adhoc.stderr);
+  assert.deepEqual(JSON.parse(adhoc.stdout).items.map(o => [o.verdict, o.passed]), [['PASS', 5]]);
+
+  assert.equal(readFileSync(stateFile(dir), 'utf8'), before, '레인이 무엇을 돌려도 상태 JSON 은 그대로다');
+});
+
+test('기록: test 단계가 실패하면 실패한 스위트·파일 이름을 요약·상태에 싣는다 — gradle 은 늘, vitest 는 DoD 판정으로 리포터가 이미 붙은 실행만 · 지난 실행의 리포트는 읽지 않는다 · 통과하면 싣지 않는다 · --main 도 같다', () => {
+  const failing = {
+    suites: [{ name: 'com.x.FeeTest', tests: 3, failures: 1 }, { name: 'com.x.OrderTest', tests: 2 }, { name: 'com.x.PayTest', tests: 4, failures: 2 }],
+    files: [{ name: 'src/a/x.spec.js', passed: 2, failed: 1 }, { name: 'src/b/z.spec.js', passed: 5 }],
+  };
+  const be = { suites: 2, tests: 3, names: ['com.x.PayTest', 'com.x.FeeTest'] }, fe = { suites: 1, tests: 1, names: ['src/a/x.spec.js'] };
+  const dir = dodTestsRepo({ full: true, ...failing });
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  // DoD tests 항목이 없다 — vitest 명령은 설정 그대로 돈다. 이름을 읽자고 리포터 인자를 붙이지 않으므로 이름은 gradle 쪽만 실린다
+  const r = gate(dir, '--full', '--json');
+  assert.equal(r.status, 1, r.stderr);
+  const sum = JSON.parse(r.stdout);
+  assert.equal(sum.results.test, 'FAIL');
+  assert.deepEqual(sum.failed_tests, { be }, '실패 건수가 많은 순 · 통과한 스위트는 없다 · vitest 는 리포트가 없으니 이름도 없다');
+  assert.deepEqual(readState(stateFile(dir)).gate.failed_tests, { be }, '상태 기록에도 남는다');
+  assert.equal('timed_out' in sum, false, '시간 초과가 아니다');
+  assert.deepEqual(runnerCalls(dir, 'frontend').at(-1), ['vitest'], 'DoD tests 항목이 없으면 test 명령에 아무것도 덧붙이지 않는다');
+  assert.match(gate(dir, '--full').stdout, /실패\s+be: 스위트·파일 2개 · 테스트 3건 — com\.x\.PayTest, com\.x\.FeeTest/, '사람이 읽는 출력에도');
+
+  // fe 에 DoD tests 항목이 생기면 test 단계에 리포터가 붙는다(DoD 판정용 — 종전 동작). 그 리포트에서 vitest 파일 이름도 읽는다
+  setDod(dir, [{ id: 'D1', text: '화면 a', tests: { stack: 'fe', select: ['src/a'] }, expect: { min_tests: 1 }, last: 'PENDING' }]);
+  const withDod = JSON.parse(gate(dir, '--full', '--json').stdout);
+  assert.ok(runnerCalls(dir, 'frontend').at(-1).some(a => a.startsWith('--outputFile.json=')), 'DoD 판정에 쓰는 실행에는 리포터가 붙는다');
+  assert.deepEqual(withDod.failed_tests, { be, fe });
+
+  // 컴파일 실패(러너가 아무것도 안 쓰고 exit 1) — 지난 실행의 XML(실패 2개 스위트)이 남아 있어도 이번 실패로 읽지 않는다
+  const xmlDir = join(dir, 'backend/build/test-results/test');
+  const old = new Date(Date.now() - 3600_000);
+  for (const f of readdirSync(xmlDir)) utimesSync(join(xmlDir, f), old, old);
+  setRunner(dir, 'backend', { compile_error: true });
+  const ce = JSON.parse(gate(dir, '--full', '--json').stdout);
+  assert.equal(ce.stacks.be.test, 'FAIL');
+  assert.deepEqual(ce.failed_tests, { fe }, 'be 는 이번 실행의 리포트가 없으니 이름도 없다');
+
+  // 고치면 사라진다 — 지난 실행의 이름이 기록에 남지 않는다
+  setRunner(dir, 'backend', { compile_error: false, suites: [{ name: 'com.x.FeeTest', tests: 3 }] });
+  setRunner(dir, 'frontend', { files: [{ name: 'src/a/x.spec.js', passed: 3 }] });
+  const ok = gate(dir, '--full', '--json');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal('failed_tests' in JSON.parse(ok.stdout), false);
+  assert.equal('failed_tests' in readState(stateFile(dir)).gate, false);
+
+  // --main: 명령을 바꾸지 않고 읽을 수 있는 gradle 이름만 — 출력과 main-gate.json 의 last 에 같은 모양
+  const m = dodTestsRepo({ full: true, ...failing });
+  g(m, 'checkout', '-q', 'main');
+  const mr = gate(m, '--main', '--json');
+  assert.equal(mr.status, 1, mr.stderr);
+  assert.deepEqual(JSON.parse(mr.stdout).failed_tests, { be });
+  assert.deepEqual(JSON.parse(readFileSync(join(m, '.claude/runtime/main-gate.json'), 'utf8')).last.failed_tests, { be });
+  assert.deepEqual(runnerCalls(m, 'frontend').at(-1), ['vitest'], '--main 도 test 명령을 바꾸지 않는다');
+  assert.match(gate(m, '--main').stdout, /실패\s+be: 스위트·파일 2개 · 테스트 3건 — com\.x\.PayTest, com\.x\.FeeTest/);
+});
+
+test('기록은 판정을 바꾸지 않는다: 덧붙은 인자를 거부하는 러너도 종전대로 PASS(--main · --full) · 리포트가 깨져 있어도 죽지 않고 FAIL 을 기록한다', () => {
+  const dir = makeRepo();
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  // 인자가 하나라도 더 붙으면 exit 9 — dod_tests 를 선언만 해 두고 DoD tests 항목은 쓰지 않는 프로젝트의 래퍼 스크립트가 이렇다.
+  // 이름을 읽으려고 test 명령에 리포터 인자를 붙이면 통과하던 게이트가 FAIL 로 바뀐다
+  const strict = `node -e "process.exit(process.argv.length > 1 ? 9 : 0)"`;
+  cfg.stacks.fe.test = strict;
+  cfg.stacks.fe.dod_tests = { adapter: 'vitest', run: strict };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  appendFileSync(join(dir, '.gitignore'), '.claude/runtime/\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'strict runner');
+  const mr = gate(dir, '--main', '--json');
+  assert.equal(mr.status, 0, mr.stdout + mr.stderr);
+  assert.equal(JSON.parse(mr.stdout).stacks.fe.test, 'PASS');
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1'); startIssue(dir);
+  edit(dir, 'frontend/app.js', 'export default 2\n'); g(dir, 'add', '-A');
+  const r = gate(dir, '--full', '--json');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(JSON.parse(r.stdout).stacks.fe.test, 'PASS');
+
+  // 리포트 자리에 JSON `null` 을 쓰고 실패하는 러너 — DoD 판정 때문에 리포터가 붙는 실행. 읽다가 죽으면 FAIL 요약도 기록도 남지 않는다
+  const broken = `node -e "const a = process.argv.find(x => x.startsWith('--outputFile.json=')); if (a) require('fs').writeFileSync(a.slice(18), 'null'); process.exit(8)"`;
+  cfg.stacks.fe.test = broken;
+  cfg.stacks.fe.dod_tests = { adapter: 'vitest', run: broken };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  g(dir, 'add', '-A');
+  setDod(dir, [{ id: 'D1', text: '화면', tests: { stack: 'fe', select: ['src/a'] }, last: 'PENDING' }]);
+  const b = gate(dir, '--full', '--json');
+  assert.equal(b.status, 1, b.stdout + b.stderr);
+  const bs = JSON.parse(b.stdout);
+  assert.equal(bs.stacks.fe.test, 'FAIL');
+  assert.equal('failed_tests' in bs, false, '읽을 리포트가 없으면 이름을 싣지 않는다');
+  const st = readState(stateFile(dir));
+  assert.equal(st.gate.results.test, 'FAIL', '판정이 상태에 기록된다');
+  assert.equal(st.dod[0].last, 'FAIL', 'DoD 항목은 「이번 실행에 안 걸렸다」로 FAIL');
+
+  // 리포트 자리를 읽을 수 없다(reports 가 디렉토리가 아니라 파일) — 이름을 읽다 난 오류가 FAIL 요약·기록을 끊지 않는다
+  const x = makeRepo();
+  const xPath = join(x, '.claude/harness.json');
+  const xCfg = JSON.parse(readFileSync(xPath, 'utf8'));
+  xCfg.stacks.be.test = `node -e "process.exit(4)"`;
+  xCfg.stacks.be.dod_tests = { adapter: 'gradle-junit', run: `node -e "process.exit(0)"`, reports: 'App.java' };
+  writeFileSync(xPath, JSON.stringify(xCfg, null, 2) + '\n');
+  appendFileSync(join(x, '.gitignore'), '.claude/runtime/\n');
+  g(x, 'add', '-A'); g(x, 'commit', '-q', '-m', 'unreadable reports');
+  const xr = gate(x, '--main', '--json');
+  assert.equal(xr.status, 1, xr.stdout + xr.stderr);
+  const xs = JSON.parse(xr.stdout);
+  assert.equal(xs.stacks.be.test, 'FAIL');
+  assert.equal('failed_tests' in xs, false);
+  assert.equal(JSON.parse(readFileSync(join(x, '.claude/runtime/main-gate.json'), 'utf8')).last.overall, 'FAIL', '기록이 남는다');
+});
+
+test('기록: 긴 출력은 로그에 머리와 꼬리를 남긴다(끝의 실패 요약이 잘리지 않는다 — 긴 stderr 가 stdout 의 끝을 밀어내지도 않는다) · 시간 상한에 걸린 단계는 timed_out 으로 따로 보이고 그 프로세스는 트리째 끝난다', async () => {
+  const dir = makeRepo();
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  // 약 37만 자 — 남기는 양(20만 자)을 넘긴다. 실패 요약은 러너가 그러듯 맨 끝에 찍는다.
+  // 표식은 실행 중에 이어 붙인다 — 로그 머리에는 명령 줄도 그대로 찍히므로, 명령에 글자 그대로 있으면 출력이 잘려도 단언이 걸린다
+  cfg.stacks.be.test = `node -e "console.log('HEAD' + '_MARK_' + 42); for (let i = 0; i < 6000; i++) console.log('x'.repeat(60)); console.log('TAIL' + '_MARK_' + 42 + ' 3 tests failed'); process.exit(1)"`;
+  // stdout 6만 자 끝에 요약, 그 뒤 stderr 17만 자 — 둘을 합쳐서 자르면 stdout 의 끝이 가운데로 밀려 잘린다
+  cfg.stacks.be.lint = `node -e "console.log('o'.repeat(60000)); console.log('SO' + '_END_' + 7); console.error('e'.repeat(170000)); console.error('SE' + '_END_' + 7)"`;
+  // 상한(30초 — 스키마 하한)보다 오래 도는 단계. 셸 → 이 프로세스 → 손자 트리를 만들고, 손자는 48초 뒤에 끝 표식을 쓴다
+  const marker = join(mkdtempSync(join(tmpdir(), 'jh-linger-')), 'end').replace(/\\/g, '/');
+  cfg.stacks.fe.test = `node '${join(HERE, 'fixtures/lingering.mjs').replace(/\\/g, '/')}' '${marker}' 48000 60000`;
+  cfg.gate = { timeout_s: 30 };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  appendFileSync(join(dir, '.gitignore'), '.claude/runtime/\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'long output');
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1'); startIssue(dir);
+  edit(dir, 'backend/App.java', 'class App { int x; }\n'); g(dir, 'add', '-A');
+  const r = gate(dir, '--full', '--json');
+  assert.equal(r.status, 1, r.stderr);
+  const sum = JSON.parse(r.stdout);
+  const log = readFileSync(join(dir, sum.log), 'utf8');
+  assert.match(log, /HEAD_MARK_42/, '머리가 남는다');
+  assert.match(log, /TAIL_MARK_42 3 tests failed/, '출력의 끝(실패 요약)이 로그에 남는다');
+  assert.match(log, /가운데 \d+자 생략/, '잘랐다는 표식');
+  assert.match(log, /SO_END_7/, 'stdout 의 끝은 긴 stderr 에 밀려 잘리지 않는다');
+  assert.match(log, /SE_END_7/, 'stderr 의 끝도 남는다');
+  for (const sec of log.split(/\n(?=## \w+\.\w+ \$ )/)) assert.ok(sec.length < 205_000, `명령 하나의 로그 크기는 묶여 있다: ${sec.length} — ${sec.slice(0, 40)}`);
+  assert.deepEqual(sum.timed_out, ['fe.test'], '시간 상한에 걸린 단계');
+  assert.deepEqual(readState(stateFile(dir)).gate.timed_out, ['fe.test']);
+  assert.equal('failed_tests' in sum, false, '어댑터가 없는 스택은 이름을 읽지 못한다 — 로그를 본다');
+  // 셸만 끝내면 그 아래 프로세스가 남아, 자리를 넘겨받은 다음 게이트와 겹쳐 돈다. 손자가 살아 있다면 끝 표식을 쓸 시각(시작 48초 뒤)을 넘겨 본다
+  assert.ok(existsSync(`${marker}.started`), '손자 프로세스는 실제로 떠 있었다');
+  if (process.platform === 'win32') {
+    await new Promise(res => setTimeout(res, 20_000));
+    assert.equal(existsSync(marker), false, '시간 상한에 걸린 단계의 프로세스는 트리째 끝난다');
+  }
+});
+
 test('전량: DoD 프로브가 스택 단계보다 먼저 돌고, FAIL 이면 스택 단계·DoD tests 를 건너뛴다(NOT_RUN) · 이번에 판정하지 않은 항목의 지난 판정은 그대로', () => {
   const dir = dodTestsRepo({ full: true, suites: [{ name: 'com.x.FeeTest', tests: 3 }], files: [{ name: 'src/a/x.spec.js', passed: 2 }] });
   const fee = { id: 'D2', text: '수수료', tests: { stack: 'be', select: ['*FeeTest*'] }, expect: { min_tests: 3 }, last: 'PASS', at: '2026-10-01T00:00:00.000Z' };
@@ -538,6 +948,79 @@ test('이름 바꾸기: 코드 파일을 docs 로 옮겨도 docs-only 로 통과
   assert.equal(p.decision, 'deny', p.reason); assert.ok(p.reason.includes('GATE_LEVEL'), p.reason);
 });
 
+test('한글 파일 이름: git 이 경로를 따옴표·8진수로 바꿔 내는 설정에서도 그 파일은 자기 스택의 변경이다(그 파일만 고쳐도 컴파일·lint 가 돈다 — 스택 없이 초록으로 지나가지 않는다) · 문서면 docs-only 다 · lint_changed 대상에도 들어간다', () => {
+  const dir = makeRepo();
+  g(dir, 'config', 'core.quotepath', 'true'); // git 기본값 — 줄 단위 출력에서 한글 경로에 따옴표가 붙는다
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  cfg.stacks.fe.lint = 'echo FULL';
+  cfg.stacks.fe.lint_changed = { run: 'echo CHANGED {files}', match: ['src/**/*.js'] };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'cfg');
+
+  // 문서 — 기본 브랜치에서도 docs-only 로 통과한다(코드로 읽히면 브랜치 패턴 밖이라 막힌다)
+  edit(dir, 'docs/회의록 1차.md', '# 회의\n'); g(dir, 'add', '-A');
+  const d = hook(dir, 'git commit -m docs');
+  assert.equal(d.decision, 'pass', d.reason);
+  g(dir, 'commit', '-q', '-m', 'docs');
+
+  // 코드 — 그 파일 하나만 바꿔도 fe 스택이 잡히고 lint 대상에 들어간다
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  mkdirSync(join(dir, 'frontend/src'), { recursive: true });
+  edit(dir, 'frontend/src/한글 화면.js', 'export default 2\n');
+  const dry = JSON.parse(gate(dir, '--commit', '--stage-all', '--dry-run', '--json').stdout);
+  assert.deepEqual(Object.keys(dry.stacks), ['fe'], '한글 이름 파일 하나만 바뀌어도 그 스택이 잡힌다');
+  assert.deepEqual([dry.lint_scope.fe.mode, dry.lint_scope.fe.files], ['changed', 1]);
+  const r = gate(dir, '--commit', '--stage-all');
+  assert.equal(r.status, 0, r.stderr);
+  let s = readState(stateFile(dir));
+  assert.deepEqual(s.gate.stacks, { fe: { compile: 'PASS', lint: 'PASS' } });
+  assert.deepEqual([s.gate.lint_scope.fe.mode, s.gate.lint_scope.fe.files], ['changed', 1]);
+  // 커밋한 뒤 — 브랜치 범위(--dod)도 같은 파일을 본다
+  g(dir, 'commit', '-q', '-m', 'ko');
+  const dod = JSON.parse(gate(dir, '--dod', '--dry-run', '--json').stdout);
+  assert.deepEqual(Object.keys(dod.stacks), ['fe']);
+  assert.deepEqual([dod.lint_scope.fe.mode, dod.lint_scope.fe.files], ['changed', 1]);
+});
+
+test('lint_changed 보강: 스택 dir 을 `./frontend` 로 적어도 바뀐 파일을 찾는다(대상 0 으로 지나가지 않는다) · 스택 위 폴더의 lint 설정이 바뀌면 전체 lint · 스택 이름이 constructor 여도 게이트가 죽지 않는다', () => {
+  const dir = makeRepo();
+  const cfgPath = join(dir, '.claude/harness.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  Object.assign(cfg.stacks.fe, { dir: './frontend', paths: ['frontend/**', 'eslint.config.mjs'], lint: 'echo FULL >> .lint-calls', lint_changed: { run: 'echo CHANGED {files} >> .lint-calls', match: ['**/*.js'] } });
+  cfg.stacks.constructor = { dir: 'ctor', lint: 'echo ctor-lint' };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  appendFileSync(join(dir, '.gitignore'), '.lint-calls\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'cfg');
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  const dry = () => JSON.parse(gate(dir, '--commit', '--stage-all', '--dry-run', '--json').stdout);
+
+  // ① `./frontend` — 변경 경로(git 은 `frontend/…` 로 낸다)와 철자가 달라도 그 스택의 파일이다
+  edit(dir, 'frontend/app.js', 'export default 2\n');
+  let d = dry();
+  assert.deepEqual(d.lint_scope, { fe: { mode: 'changed', files: 1, reason: '바뀐 파일 1개' } });
+  assert.equal(d.stacks.fe.lint, "echo CHANGED 'app.js' >> .lint-calls");
+
+  // ② 스택 위 폴더(저장소 루트)의 lint 설정 — 스택 안에서 바뀐 것과 무관하게 전체 lint
+  edit(dir, 'eslint.config.mjs', 'export default []\n');
+  d = dry();
+  assert.equal(d.lint_scope.fe.mode, 'full');
+  assert.match(d.lint_scope.fe.reason, /\(상위 폴더\) eslint\.config\.mjs/);
+  assert.equal(d.stacks.fe.lint, 'echo FULL >> .lint-calls');
+
+  // ③ 스택 이름이 물려받은 속성 이름(constructor)이어도 lint 단계가 제 명령으로 돈다 — 「lint 계획 있음」으로 잘못 읽혀 죽지 않는다
+  mkdirSync(join(dir, 'ctor'), { recursive: true });
+  edit(dir, 'ctor/x.txt', 'x\n');
+  const r = gate(dir, '--commit', '--stage-all', '--json');
+  assert.equal(r.status, 0, r.stderr);
+  const s = readState(stateFile(dir));
+  assert.equal(s.gate.stacks.constructor.lint, 'PASS');
+  assert.deepEqual(Object.keys(s.gate.lint_scope), ['fe'], 'lint_changed 가 없는 스택은 범위 기록도 없다');
+  assert.deepEqual(readFileSync(join(dir, 'frontend/.lint-calls'), 'utf8').trim().split(/\r?\n/).map(l => l.trim()), ['FULL']);
+});
+
 test('게이트 도중 다른 경로가 쓴 상태(리뷰 기록)를 게이트 종료가 덮어쓰지 않는다 — 쓰기 직전에 다시 읽고 gate·history·DoD 판정만 얹는다', () => {
   const dir = makeRepo();
   g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
@@ -582,6 +1065,109 @@ test('스택 명령 실패 주입 → compile FAIL 기록 + hook GATE_FAIL · dr
   addReview(dir);
   const h = hook(dir, 'git commit -m x');
   assert.equal(h.decision, 'deny'); assert.ok(h.reason.includes('GATE_FAIL') && h.reason.includes('compile=FAIL'), h.reason);
+});
+
+test('lint_changed: 이슈 게이트(--commit · --dod · --related)의 lint 는 그 게이트가 보는 변경 파일만 넘겨 돈다 · 바뀐 대상이 없으면 always 만 돌거나 SKIPPED(전체로 넘기지 않는다) · lint 설정 변경은 전체 lint · --full 은 언제나 전체 · 좁힌 명령의 실패도 lint FAIL · 어느 쪽으로 돌았는지 계획·로그·기록·요약에 남는다 · {files} 없는 run 은 설정 오류', () => {
+  const dir = makeRepo();
+  const setFe = (patch) => { const f = join(dir, '.claude/harness.json'); const cfg = JSON.parse(readFileSync(f, 'utf8')); Object.assign(cfg.stacks.fe, patch); writeFileSync(f, JSON.stringify(cfg)); };
+  const MATCH = ['**/*.js', '**/*.vue'];
+  // lint 가 무엇으로 불렸는지 스택 dir 의 파일에 남긴다 — 전체는 FULL, 좁힌 것은 CHANGED <파일…>
+  setFe({ lint: 'echo FULL >> .lint-calls', lint_changed: { run: 'echo CHANGED {files} >> .lint-calls', match: MATCH } });
+  appendFileSync(join(dir, '.gitignore'), '.lint-calls\n');
+  mkdirSync(join(dir, 'frontend/src'), { recursive: true });
+  edit(dir, 'frontend/src/a.vue', '<template></template>\n'); edit(dir, 'frontend/src/b.js', 'export const b = 1\n'); edit(dir, 'frontend/data.txt', 'x\n');
+  g(dir, 'add', '-A'); g(dir, 'commit', '-q', '-m', 'cfg');
+  g(dir, 'checkout', '-q', '-b', 'feat/ABC-1');
+  startIssue(dir);
+  const callsFile = join(dir, 'frontend/.lint-calls');
+  const calls = () => (existsSync(callsFile) ? readFileSync(callsFile, 'utf8').split(/\r?\n/).map(l => l.trim()).filter(Boolean) : []);
+  const run = (...args) => { const r = gate(dir, ...args, '--json'); assert.ok(r.stdout.trim().startsWith('{'), `요약 JSON 이 없다: ${r.stderr}`); return { r, j: JSON.parse(r.stdout) }; };
+  const commit = (m) => g(dir, 'commit', '-q', '-m', m);
+
+  // ① 커밋 게이트 — 작업트리에서 바뀐 lint 대상만(match 밖 data.txt 는 넘기지 않는다)
+  edit(dir, 'frontend/app.js', 'export default 2\n'); edit(dir, 'frontend/src/a.vue', '<template><p/></template>\n'); edit(dir, 'frontend/data.txt', 'y\n');
+  g(dir, 'add', '-A');
+  const dry = JSON.parse(gate(dir, '--commit', '--dry-run', '--json').stdout);
+  assert.equal(dry.stacks.fe.lint, "echo CHANGED 'app.js' 'src/a.vue' >> .lint-calls", 'dry-run 은 실제로 돌 명령을 보여 준다');
+  assert.deepEqual(dry.lint_scope, { fe: { mode: 'changed', files: 2, reason: '바뀐 파일 2개' } });
+  assert.deepEqual(calls(), [], 'dry-run 은 돌리지 않는다');
+  const c1 = run('--commit');
+  assert.equal(c1.r.status, 0, c1.r.stderr);
+  assert.deepEqual(calls(), ['CHANGED app.js src/a.vue']);
+  assert.equal(c1.j.results.lint, 'PASS');
+  assert.deepEqual(c1.j.lint_scope, { fe: { mode: 'changed', files: 2, reason: '바뀐 파일 2개' } });
+  assert.deepEqual(readState(stateFile(dir)).gate.lint_scope, c1.j.lint_scope, '기록에도 남는다 — 좁혀 돈 초록을 전체 lint 의 초록과 구분한다');
+  assert.match(readFileSync(join(dir, c1.j.log), 'utf8'), /## fe\.lint 범위 mode=changed files=2 — 바뀐 파일 2개/);
+  commit('c1');
+
+  // ② 스택은 바뀌었는데 바뀐 lint 대상이 없다 — 전체로 넘기지 않고 돌리지 않는다. 초록(PASS)이 아니라 SKIPPED 와 「검사 0」으로 남는다
+  let n = calls().length;
+  edit(dir, 'frontend/data.txt', 'z\n'); g(dir, 'add', '-A');
+  const c2 = gate(dir, '--commit');
+  assert.equal(c2.status, 0, c2.stderr);
+  assert.equal(calls().length, n, 'lint 명령을 띄우지 않는다');
+  assert.match(c2.stdout, /lint 범위 fe: 바뀐 파일 중 lint 대상이 없다 — lint 를 돌리지 않았다\(검사 0\) · 전체 lint 는 --full·--main 에서/);
+  const st2 = readState(stateFile(dir));
+  assert.equal(st2.gate.results.lint, 'SKIPPED'); assert.equal(st2.gate.stacks.fe.lint, 'SKIPPED');
+  assert.deepEqual([st2.gate.lint_scope.fe.mode, st2.gate.lint_scope.fe.files], ['none', 0]);
+  // always — 파일 목록과 무관한 검사는 바뀐 대상이 없어도 돈다(그것만)
+  setFe({ lint_changed: { run: 'echo CHANGED {files} >> .lint-calls', match: MATCH, always: 'echo ALWAYS >> .lint-calls' } });
+  const dry2 = JSON.parse(gate(dir, '--commit', '--dry-run', '--json').stdout);
+  assert.equal(dry2.stacks.fe.lint, 'echo ALWAYS >> .lint-calls');
+  const c2b = run('--commit');
+  assert.equal(c2b.r.status, 0, c2b.r.stderr);
+  assert.deepEqual(calls().slice(n), ['ALWAYS']);
+  assert.equal(c2b.j.results.lint, 'PASS');
+  assert.match(c2b.j.lint_scope.fe.reason, /파일과 무관한 검사\(always\)만 돌았다/);
+  commit('c2');
+
+  // ③ --dod · --related 는 이 브랜치가 바꾼 것 전부 — 앞 커밋의 파일 + 작업트리. always 는 좁힌 명령 뒤에 돈다
+  edit(dir, 'frontend/src/b.js', 'export const b = 2\n'); g(dir, 'add', '-A');
+  n = calls().length;
+  const d1 = gate(dir, '--dod');
+  assert.equal(d1.status, 0, d1.stderr);
+  assert.deepEqual(calls().slice(n), ['CHANGED app.js src/a.vue src/b.js', 'ALWAYS']);
+  assert.match(d1.stdout, /lint 범위 fe: 바뀐 파일 3개만 · 전체 lint 는 --full·--main 에서/);
+  n = calls().length;
+  const r1 = run('--related');
+  assert.equal(r1.r.status, 0, r1.r.stderr);
+  assert.deepEqual(calls().slice(n), ['CHANGED app.js src/a.vue src/b.js', 'ALWAYS']);
+  assert.equal(r1.j.lint_scope.fe.files, 3);
+
+  // ④ --full 은 lint_changed 를 보지 않는다 — 언제나 전체, 범위 기록도 없다
+  n = calls().length;
+  const f1 = run('--full');
+  assert.equal(f1.r.status, 0, f1.r.stderr);
+  assert.deepEqual(calls().slice(n), ['FULL']);
+  assert.equal(f1.j.lint_scope, undefined);
+  assert.equal(readState(stateFile(dir)).gate.lint_scope, undefined);
+  commit('c3');
+
+  // ⑤ lint 설정·의존성이 바뀌면 규칙이 달라진다 — 안 바뀐 파일의 판정도 바뀔 수 있으니 전체
+  edit(dir, 'frontend/package.json', '{}\n'); edit(dir, 'frontend/app.js', 'export default 3\n'); g(dir, 'add', '-A');
+  const c5 = run('--commit');
+  assert.equal(c5.r.status, 0, c5.r.stderr);
+  assert.equal(calls().at(-1), 'FULL');
+  assert.match(c5.j.lint_scope.fe.reason, /lint 설정·의존성이 바뀌었다\(package\.json\)/);
+  commit('c5');
+
+  // ⑥ 좁힌 명령이 실패하면 lint FAIL — 좁혔다고 느슨해지지 않는다(실패한 뒤의 always 는 돌지 않는다)
+  setFe({ lint_changed: { run: 'echo CHANGED {files} >> .lint-calls && exit 4', match: MATCH, always: 'echo ALWAYS >> .lint-calls' } });
+  edit(dir, 'frontend/src/b.js', 'export const b = 3\n'); g(dir, 'add', '-A');
+  n = calls().length;
+  const c6 = run('--commit');
+  assert.equal(c6.r.status, 1);
+  assert.deepEqual(calls().slice(n), ['CHANGED src/b.js']);
+  assert.equal(c6.j.results.lint, 'FAIL'); assert.equal(c6.j.stacks.fe.lint, 'FAIL');
+  assert.equal(c6.j.lint_scope.fe.mode, 'changed');
+
+  // ⑦ {files} 자리가 없는 run 은 아무것도 좁히지 못한다 — 설정을 읽을 때 막는다
+  n = calls().length;
+  setFe({ lint_changed: { run: 'echo CHANGED >> .lint-calls', match: MATCH } });
+  const bad = gate(dir, '--commit');
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /lint_changed\.run/);
+  assert.equal(calls().length, n, '설정 오류면 lint 를 돌리지 않는다');
 });
 
 test('worktree: 메인 저장소의 harness.json·상태를 쓴다 (설계 §7 ② 위반 주입 축)', () => {

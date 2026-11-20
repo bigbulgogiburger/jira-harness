@@ -1,4 +1,5 @@
 // herdr-lanes.mjs 역할 실측 — reviewer 재사용(있으면 쓰고 없으면 띄움 · /new 정책 · busy) · codex-review 의 CODEX_RESULT 계약 · runner pane 게이트
+import './fixtures/no-queue.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
